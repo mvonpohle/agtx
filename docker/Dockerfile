@@ -1,6 +1,10 @@
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+# Ubuntu's OpenSSL auto-enables its FIPS provider when the host kernel is in
+# FIPS mode, but this image ships no FIPS provider module, so every digest
+# fails there (e.g. the ca-certificates postinst). No-op on non-FIPS hosts.
+ENV OPENSSL_FORCE_FIPS_MODE=0
 
 ARG NODE_MAJOR=22
 
@@ -39,14 +43,13 @@ RUN userdel -r ubuntu 2>/dev/null || true && \
 COPY --chown=root:root entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
+# Create agtx dirs so named volume mounts inherit correct ownership.
+# Group-writable, not user-owned: rootless builds can't setuid to huge host UIDs.
+RUN mkdir -p /home/sandbox/.config/agtx /home/sandbox/.local/share/agtx /home/sandbox/.claude && \
+    chgrp -R "${GID}" /home/sandbox && chmod -R g+w /home/sandbox
+
 USER sandbox
 WORKDIR /home/sandbox
-
-# Create agtx dirs as sandbox user so named volume mounts inherit correct ownership
-RUN mkdir -p \
-    /home/sandbox/.config/agtx \
-    /home/sandbox/.local/share/agtx \
-    /home/sandbox/.claude
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["agtx"]

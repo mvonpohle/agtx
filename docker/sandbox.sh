@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-# agtx Docker sandbox
+# agtx sandbox
 # Usage: ./docker/sandbox.sh [path/to/project]  (defaults to current directory)
 
 DOCKER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,10 +23,13 @@ resolve_path() {
     cd "$1" && pwd -P
 }
 
-# Checks
-if ! command -v docker &>/dev/null; then
-    error "docker not found — install Docker Desktop (macOS/Windows) or Docker Engine (Linux)"
-fi
+# Container runtime: docker when installed, else podman (AGTX_CONTAINER_RUNTIME overrides)
+CR="${AGTX_CONTAINER_RUNTIME:-docker}"
+command -v "$CR" &>/dev/null || CR=podman
+command -v "$CR" &>/dev/null || error "no container runtime found — install docker or podman"
+
+# Rootless podman remaps UIDs; keep-id preserves host ownership on bind mounts
+USERNS=""; [ "$CR" = "podman" ] && [ "$(id -u)" -ne 0 ] && USERNS="--userns=keep-id"
 
 RAW_PROJECT="${1:-$(pwd)}"
 
@@ -38,7 +41,7 @@ PROJECT="$(resolve_path "$RAW_PROJECT")"
 
 echo ""
 echo "  ╭──────────────────────────────────────────╮"
-echo "  │           agtx docker sandbox            │"
+echo "  │               agtx sandbox               │"
 echo "  ╰──────────────────────────────────────────╯"
 echo ""
 
@@ -54,7 +57,7 @@ fi
 
 # Build image with host UID/GID so files created in the container are owned correctly
 info "Building image..."
-docker build -q \
+"$CR" build -q \
     --build-arg UID="$(id -u)" \
     --build-arg GID="$(id -g)" \
     -t agtx-sandbox \
@@ -90,8 +93,9 @@ fi
 
 # Started detached so the credential can be planted before any agent launches,
 # then attached so the TUI behaves exactly as before. `--rm` still cleans up on
-# exit, and `docker attach` returns the container's exit code.
-CID=$(docker run -d -it --rm \
+# exit, and `attach` returns the container's exit code.
+CID=$("$CR" run -d -it --rm \
+    $USERNS \
     --security-opt no-new-privileges:true \
     --cap-drop ALL \
     --cap-add CHOWN \
@@ -108,9 +112,9 @@ CID=$(docker run -d -it --rm \
     agtx /home/sandbox/workspace)
 
 if [ -n "$CLAUDE_CREDS" ]; then
-    printf '%s' "$CLAUDE_CREDS" | docker exec -i "$CID" \
+    printf '%s' "$CLAUDE_CREDS" | "$CR" exec -i "$CID" \
         /bin/bash -c 'umask 077 && cat > /home/sandbox/.claude/.credentials.json'
     unset CLAUDE_CREDS
 fi
 
-exec docker attach "$CID"
+exec "$CR" attach "$CID"
