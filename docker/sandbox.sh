@@ -109,7 +109,6 @@ CID=$("$CR" run -d -it --rm \
     --cap-add SETUID \
     --cap-add SETGID \
     -v "${PROJECT}:/home/sandbox/workspace" \
-    -v agtx-data:/home/sandbox/.local/share/agtx \
     ${AGTX_CONFIG_MOUNT} \
     -v "${HOME}/.claude:/claude-host:ro" \
     ${CLAUDE_JSON_MOUNT} \
