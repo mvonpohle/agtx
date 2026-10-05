@@ -75,10 +75,9 @@ if [ -f "${HOME}/.claude.json" ]; then
     CLAUDE_JSON_MOUNT="-v ${HOME}/.claude.json:/claude-host.json:ro"
 fi
 
-# Stage the host's global agtx settings for copy-in at startup. Only the
-# settings files are mounted, not the whole config dir, so agtx's state
-# files (index.db, trust store) never cross into the container.
-AGTX_CONFIG_MOUNT="-v agtx-config:/home/sandbox/.config/agtx"
+# Stage the host's global agtx settings for copy-in at startup, same pattern
+# as ~/.claude below. No volume; the config dir is ephemeral per run.
+AGTX_CONFIG_MOUNT=""
 [ -f "${HOME}/.config/agtx/config.toml" ] && AGTX_CONFIG_MOUNT="$AGTX_CONFIG_MOUNT -v ${HOME}/.config/agtx/config.toml:/agtx-host-config.toml:ro"
 [ -d "${HOME}/.config/agtx/plugins" ] && AGTX_CONFIG_MOUNT="$AGTX_CONFIG_MOUNT -v ${HOME}/.config/agtx/plugins:/agtx-host-plugins:ro"
 
