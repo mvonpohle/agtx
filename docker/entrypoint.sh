@@ -70,16 +70,12 @@ else
     echo '{"skipDangerousModePermissionPrompt":true}' > "$settings"
 fi
 
-# Seed the sandbox config from the host's global config (mounted read-only at
-# /agtx-host-config). Only settings are copied; agtx's state files stay on the
-# writable volume.
-if [ -d /agtx-host-config ]; then
-    mkdir -p /home/sandbox/.config/agtx
-    cp -f /agtx-host-config/config.toml /home/sandbox/.config/agtx/config.toml 2>/dev/null || true
-    if [ -d /agtx-host-config/plugins ]; then
-        rm -rf /home/sandbox/.config/agtx/plugins
-        cp -r /agtx-host-config/plugins /home/sandbox/.config/agtx/plugins 2>/dev/null || true
-    fi
+# Copy the host's global agtx settings into the writable sandbox home.
+# Mounted read-only so the container never writes back to the host.
+[ -f /agtx-host-config.toml ] && cp -f /agtx-host-config.toml /home/sandbox/.config/agtx/config.toml 2>/dev/null || true
+if [ -d /agtx-host-plugins ]; then
+    rm -rf /home/sandbox/.config/agtx/plugins
+    cp -r /agtx-host-plugins /home/sandbox/.config/agtx/plugins 2>/dev/null || true
 fi
 
 # Turn on auto_trust inside the sandbox (no human at the board to answer trust

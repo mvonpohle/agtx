@@ -75,12 +75,12 @@ if [ -f "${HOME}/.claude.json" ]; then
     CLAUDE_JSON_MOUNT="-v ${HOME}/.claude.json:/claude-host.json:ro"
 fi
 
-# Use the host's global agtx config in the sandbox. The settings are copied in
-# at startup (agtx also writes state here, so a direct read-only bind fails),
-# same pattern as ~/.claude above. Falls back to the agtx-config named volume
-# if the host dir doesn't exist.
+# Stage the host's global agtx settings for copy-in at startup. Only the
+# settings files are mounted, not the whole config dir, so agtx's state
+# files (index.db, trust store) never cross into the container.
 AGTX_CONFIG_MOUNT="-v agtx-config:/home/sandbox/.config/agtx"
-[ -d "${HOME}/.config/agtx" ] && AGTX_CONFIG_MOUNT="-v agtx-config:/home/sandbox/.config/agtx -v ${HOME}/.config/agtx:/agtx-host-config:ro"
+[ -f "${HOME}/.config/agtx/config.toml" ] && AGTX_CONFIG_MOUNT="$AGTX_CONFIG_MOUNT -v ${HOME}/.config/agtx/config.toml:/agtx-host-config.toml:ro"
+[ -d "${HOME}/.config/agtx/plugins" ] && AGTX_CONFIG_MOUNT="$AGTX_CONFIG_MOUNT -v ${HOME}/.config/agtx/plugins:/agtx-host-plugins:ro"
 
 # On macOS the Claude OAuth token lives in the Keychain, not in `~/.claude`, so
 # copying that directory leaves the container on "Not logged in · Please run
