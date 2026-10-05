@@ -82,6 +82,15 @@ AGTX_CONFIG_MOUNT="-v agtx-data:/home/sandbox/.config/agtx"
 [ -f "${HOME}/.config/agtx/config.toml" ] && AGTX_CONFIG_MOUNT="$AGTX_CONFIG_MOUNT -v ${HOME}/.config/agtx/config.toml:/agtx-host-config.toml:ro"
 [ -d "${HOME}/.config/agtx/plugins" ] && AGTX_CONFIG_MOUNT="$AGTX_CONFIG_MOUNT -v ${HOME}/.config/agtx/plugins:/agtx-host-plugins:ro"
 
+# OpenCode's global config (~/.config/opencode) selects its provider and model.
+# A fresh container has neither and opens on a "no provider" state, so the host's
+# is copied in at startup, the same way ~/.claude is handled above. Copied (not
+# bind-mounted) because OpenCode writes into this directory.
+OPENCODE_CONFIG_MOUNT=""
+if [ -d "${HOME}/.config/opencode" ]; then
+    OPENCODE_CONFIG_MOUNT="-v ${HOME}/.config/opencode:/opencode-host:ro"
+fi
+
 # On macOS the Claude OAuth token lives in the Keychain, not in `~/.claude`, so
 # copying that directory leaves the container on "Not logged in · Please run
 # /login". Materialise the same `.credentials.json` Claude Code writes on Linux.
@@ -101,8 +110,14 @@ fi
 # Started detached so the credential can be planted before any agent launches,
 # then attached so the TUI behaves exactly as before. `--rm` still cleans up on
 # exit, and `attach` returns the container's exit code.
+#
+# `--network host` lets the sandbox reach the host's own services. That is what a
+# locally-hosted model needs (e.g. Ollama on localhost, which a bridge network
+# would hide behind the container's own loopback). Claude needs no such access —
+# it talks to Anthropic's cloud — so this only matters for local-model setups.
 CID=$("$CR" run -d -it --rm \
     $USERNS \
+    --network host \
     --security-opt no-new-privileges:true \
     --cap-drop ALL \
     --cap-add CHOWN \
@@ -113,6 +128,7 @@ CID=$("$CR" run -d -it --rm \
     ${AGTX_CONFIG_MOUNT} \
     -v "${HOME}/.claude:/claude-host:ro" \
     ${CLAUDE_JSON_MOUNT} \
+    ${OPENCODE_CONFIG_MOUNT} \
     -w /home/sandbox/workspace \
     agtx-sandbox \
     agtx /home/sandbox/workspace)

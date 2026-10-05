@@ -16,6 +16,18 @@ if [ -f /claude-host.json ]; then
     chmod u+w /home/sandbox/.claude.json 2>/dev/null || true
 fi
 
+# Copy the host's OpenCode global config (provider + model selection) into the
+# writable sandbox home, the same way ~/.claude is copied above. Only the config
+# file is worth copying — the plugin runtime (node_modules) OpenCode manages
+# itself and is host-specific. Without this a fresh container has no provider
+# and opens on a "no provider" state.
+if [ -d /opencode-host ]; then
+    mkdir -p /home/sandbox/.config/opencode
+    cp -f /opencode-host/opencode.json  /home/sandbox/.config/opencode/ 2>/dev/null || true
+    cp -f /opencode-host/opencode.jsonc /home/sandbox/.config/opencode/ 2>/dev/null || true
+    cp -f /opencode-host/opencode.json5 /home/sandbox/.config/opencode/ 2>/dev/null || true
+fi
+
 # Trust the workspace for Claude. Trust records are path-keyed and the project is
 # mounted at a path the host never used, so the copied map above never matches it.
 # Appropriate here for the same reason as the bypass pre-accept: an isolated,
