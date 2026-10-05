@@ -70,16 +70,28 @@ else
     echo '{"skipDangerousModePermissionPrompt":true}' > "$settings"
 fi
 
-# agtx no longer answers trust prompts by reading the pane (`auto_trust`, default
-# off), so inside the sandbox it is turned on explicitly. Same reasoning as the
-# bypass pre-accept above: the container is disposable, holds nothing but the
-# project, and there is no human at the board to answer a prompt.
-mkdir -p /home/sandbox/.config/agtx
-agtx_config=/home/sandbox/.config/agtx/config.toml
-if [ -f "$agtx_config" ]; then
-    grep -q '^auto_trust' "$agtx_config" || echo 'auto_trust = true' >> "$agtx_config"
-else
-    echo 'auto_trust = true' > "$agtx_config"
+# Seed the sandbox config from the host's global config (mounted read-only at
+# /agtx-host-config). Only settings are copied; agtx's state files stay on the
+# writable volume.
+if [ -d /agtx-host-config ]; then
+    mkdir -p /home/sandbox/.config/agtx
+    cp -f /agtx-host-config/config.toml /home/sandbox/.config/agtx/config.toml 2>/dev/null || true
+    if [ -d /agtx-host-config/plugins ]; then
+        rm -rf /home/sandbox/.config/agtx/plugins
+        cp -r /agtx-host-config/plugins /home/sandbox/.config/agtx/plugins 2>/dev/null || true
+    fi
+fi
+
+# Turn on auto_trust inside the sandbox (no human at the board to answer trust
+# prompts). Skipped when the config dir isn't writable.
+if [ -w /home/sandbox/.config/agtx ]; then
+    mkdir -p /home/sandbox/.config/agtx
+    agtx_config=/home/sandbox/.config/agtx/config.toml
+    if [ -f "$agtx_config" ]; then
+        grep -q '^auto_trust' "$agtx_config" || echo 'auto_trust = true' >> "$agtx_config"
+    else
+        echo 'auto_trust = true' > "$agtx_config"
+    fi
 fi
 
 exec "$@"
