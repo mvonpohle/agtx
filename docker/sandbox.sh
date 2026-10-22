@@ -45,6 +45,11 @@ case "${AGTX_HOST_NETWORK:-}" in
     *) [ "$(uname -s)" != "Darwin" ] && NET="--network host" ;;
 esac
 
+# The entrypoint needs to know whether the container's localhost reaches the
+# host (host networking) or not (bridge); it uses this to adapt local-model
+# provider configs. See entrypoint.sh.
+export SANDBOX_NET_MODE=$([ -n "$NET" ] && echo host || echo bridge)
+
 RAW_PROJECT="${1:-$(pwd)}"
 
 if [ ! -d "$RAW_PROJECT" ]; then

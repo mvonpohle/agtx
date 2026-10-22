@@ -28,6 +28,61 @@ if [ -d /opencode-host ]; then
     cp -f /opencode-host/opencode.json5 /home/sandbox/.config/opencode/ 2>/dev/null || true
 fi
 
+# On bridge networking (e.g. podman on macOS, where --network host is
+# unavailable) the container's localhost is not the host's: a provider pointed
+# at a local model (e.g. Ollama on localhost:11434) is unreachable as
+# configured. Discover the host as seen from here — the slirp gateway, Docker's
+# host alias, or the bridge gateway — and rewrite the loopback hosts in the
+# COPIED config (any port, any provider). The host's real config is never
+# touched; if nothing responds the config is left as-is and we warn.
+if [ "${SANDBOX_NET_MODE:-bridge}" != "host" ] && [ -d /opencode-host ]; then
+    oc_cfg=/home/sandbox/.config/opencode
+    oc_refs=$(cat "$oc_cfg"/opencode.json* 2>/dev/null | grep -ohE 'https?://(localhost|127\.0\.0\.1)(:[0-9]+)?' | sort -u)
+    if [ -n "$oc_refs" ]; then
+        # Probe on the first referenced port; all local services share the host.
+        oc_port=$(printf '%s\n' "$oc_refs" | grep -oE ':[0-9]+$' | head -n1 | tr -d ':')
+        [ -n "$oc_port" ] || oc_port=11434
+        # Default gateway. No iproute2 in the image, so decode /proc/net/route.
+        def_gw=$(node -e '
+            try {
+                const lines = require("fs").readFileSync("/proc/net/route", "utf8").trim().split("\n").slice(1);
+                for (const line of lines) {
+                    const c = line.trim().split(/\s+/);
+                    if (c[1] === "00000000") {
+                        console.log(("00000000" + c[2]).slice(-8).match(/../g).reverse().map(x => parseInt(x, 16)).join("."));
+                        break;
+                    }
+                }
+            } catch (e) {}
+        ' 2>/dev/null)
+        oc_host=""
+        for cand in 10.0.2.2 host.docker.internal 172.17.0.1 ${def_gw:-}; do
+            [ -n "$cand" ] || continue
+            # --noproxy '*': probe directly. On proxied networks (corporate HPC)
+            # an http_proxy env var would answer every probe for the proxy's own
+            # error page and fake a reachable host.
+            if curl -s --max-time 1 --noproxy '*' -o /dev/null "http://$cand:$oc_port/"; then
+                oc_host=$cand
+                break
+            fi
+        done
+        if [ -n "$oc_host" ]; then
+            for f in "$oc_cfg"/opencode.json "$oc_cfg"/opencode.jsonc "$oc_cfg"/opencode.json5; do
+                [ -f "$f" ] || continue
+                sed -i -E "s#(https?)://(localhost|127\.0\.0\.1)(:[0-9]+)?#\1://$oc_host\3#g" "$f"
+            done
+            # The agent's own HTTP client honors http_proxy too; make sure the
+            # rewritten host bypasses it, or the model traffic still goes to the
+            # proxy instead of the host.
+            export no_proxy="$oc_host${no_proxy:+,$no_proxy}"
+            export NO_PROXY="$oc_host${NO_PROXY:+,$NO_PROXY}"
+            echo "opencode: local model host rewritten for bridge networking: $oc_refs -> $oc_host"
+        else
+            echo "warning: local model host unreachable from the sandbox ($oc_refs) — is Ollama running on a non-loopback interface?"
+        fi
+    fi
+fi
+
 # Trust the workspace for Claude. Trust records are path-keyed and the project is
 # mounted at a path the host never used, so the copied map above never matches it.
 # Appropriate here for the same reason as the bypass pre-accept: an isolated,
