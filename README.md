@@ -876,6 +876,80 @@ The sandbox:
 - Persists agtx state (trust store, project databases) in a container volume across runs, isolated from your host's agtx data
 - Pre-accepts the bypass permissions prompt, which is appropriate in an isolated container
 
+### Extra paths
+
+Expose additional host paths inside the sandbox with `--mount` (repeatable), the
+`AGTX_SANDBOX_MOUNTS` environment variable (comma-separated), or
+`--mounts-file FILE` (one entry per line, `#` comments):
+
+```bash
+# read-only shared data (ro is the default)
+./docker/sandbox.sh --mount ~/data:/sandbox/mounts/data:ro
+
+# a second repo the agent may edit — read/write must be requested explicitly
+./docker/sandbox.sh --mount ~/code/sibling-project:rw
+```
+
+Entry syntax is `SRC[:DST][:ro|rw]`. `DST` defaults to
+`/sandbox/mounts/<basename>`; precedence is CLI flag > env var > file (a later
+source overrides an earlier one for the same container target). The sandbox
+refuses to start if a host path does not exist (the runtime would otherwise
+silently create it), and it warns — without blocking — for `rw` mounts, mounts
+of your home directory, and mounts that look like secret stores (`~/.ssh`,
+`~/.aws`, ...).
+
+Paths the sandbox exposes by default:
+
+| Host path | Container | Mode |
+|---|---|---|
+| the project | `/home/sandbox/workspace` | rw |
+| `~/.claude` | staged ro, copied to `~/.claude` | ro |
+| `~/.claude.json` | staged ro, copied to `~/.claude.json` | ro |
+| `~/.config/agtx/config.toml` | staged ro, copied to `~/.config/agtx/` | ro |
+| `~/.config/agtx/plugins/` | staged ro, copied to `~/.config/agtx/plugins/` | ro |
+| `~/.config/opencode` | staged ro, copied to `~/.config/opencode` | ro |
+| (state) `agtx-data` volume | `~/.config/agtx` | rw, persists across runs |
+
+> [!NOTE]
+> On macOS with Docker Desktop, only shared paths are bind-mountable
+> (typically your home directory, `/tmp`, `/private`, `/var`, `/Users`,
+> `/Volumes`). With Podman on macOS the VM shares your home directory; paths
+> outside it are not visible to the container.
+
+### Compose mode
+
+`sandbox.sh` can drive [Docker Compose](https://docs.docker.com/compose/) or
+[podman compose](https://github.com/containers/podman-compose) instead of a
+plain `run`. Compose mode is enabled automatically when a user override file
+exists at `docker/sandbox.compose.yaml` (or `AGTX_SANDBOX_COMPOSE_FILE` points
+at one), and can be forced with `--compose` (or suppressed with
+`--no-compose`). Copy the example to start:
+
+```bash
+cp docker/sandbox.compose.example.yaml docker/sandbox.compose.yaml
+# edit it, then run the sandbox as usual:
+./docker/sandbox.sh
+```
+
+Your override file is merged over the canonical base
+(`docker/docker-compose.yaml`); add entries under `services.agtx.volumes`.
+`--mount` flags, `AGTX_SANDBOX_MOUNTS`, and `--mounts-file` work in compose
+mode too and are merged in as well.
+
+> [!NOTE]
+> Compose mode requires the compose tooling: the Docker Compose plugin
+> (`docker compose version`) or [podman-compose](https://github.com/containers/podman-compose)
+> for Podman (e.g. `brew install podman-compose`). File ownership on
+> bind mounts uses Podman's `userns_mode: keep-id`; Docker only accepts
+> `userns_mode: host`, so rootless-Podman ownership guarantees apply to the
+> Podman path.
+
+### Dry run
+
+`--print` shows the exact commands the sandbox would run (native `run`, or the
+compose sequence including the generated override), without building, starting,
+or prompting — useful for debugging and CI.
+
 > [!NOTE]
 > Requires [Docker Engine](https://docs.docker.com/engine/install/) (Linux), [Docker Desktop](https://docs.docker.com/desktop/) (macOS/Windows), or [Podman](https://podman.io/docs/installation) (rootful or rootless). The image is built automatically on first run and cached for subsequent runs. Set `AGTX_CONTAINER_RUNTIME=podman` (or `=docker`) to pick a runtime explicitly when both are installed.
 

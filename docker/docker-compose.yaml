@@ -1,0 +1,41 @@
+# agtx sandbox — canonical base (compose mode)
+#
+# sandbox.sh is the entry point. It injects the host-specific values below via
+# ${...} interpolation (SANDBOX_PROJECT, SANDBOX_UID, SANDBOX_GID,
+# SANDBOX_USERNS_MODE, SANDBOX_NETWORK_MODE), then merges:
+#   1. a generated override (staged host paths + your --mount entries), and
+#   2. your override file (docker/sandbox.compose.yaml or
+#      AGTX_SANDBOX_COMPOSE_FILE), if present.
+#
+# userns_mode: 'keep-id' (Podman) preserves host file ownership on bind
+# mounts; 'host' is the only value Docker accepts. sandbox.sh picks the right
+# one for the runtime in use.
+#
+# The staged read-only mounts (~/.claude, ~/.claude.json, ~/.config/agtx/
+# settings, ~/.config/opencode) live in the generated override, not here, so
+# they are included only when the host paths exist — docker would otherwise
+# silently create them.
+services:
+  agtx:
+    build:
+      context: .
+      args:
+        UID: ${SANDBOX_UID:-1000}
+        GID: ${SANDBOX_GID:-1000}
+    image: agtx-sandbox
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, SETUID, SETGID]
+    security_opt:
+      - no-new-privileges:true
+    userns_mode: ${SANDBOX_USERNS_MODE:-host}
+    network_mode: ${SANDBOX_NETWORK_MODE:-bridge}
+    working_dir: /home/sandbox/workspace
+    stdin_open: true
+    tty: true
+    volumes:
+      - ${SANDBOX_PROJECT}:/home/sandbox/workspace
+      - agtx-data:/home/sandbox/.config/agtx
+    command: [agtx, /home/sandbox/workspace]
+
+volumes:
+  agtx-data:

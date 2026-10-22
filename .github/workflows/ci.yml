@@ -61,3 +61,69 @@ jobs:
 
       - name: Run web client tests
         run: node --test tests/web_client_tests.mjs
+
+  sandbox-shell:
+    name: Sandbox scripts
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Syntax check
+        run: bash -n docker/sandbox.sh docker/entrypoint.sh
+
+      - name: Shellcheck
+        run: shellcheck docker/sandbox.sh
+
+      - name: YAML sanity (compose files)
+        run: |
+          python3 -m pip install --quiet pyyaml
+          python3 - <<'EOF'
+          import yaml
+          for f in ("docker/docker-compose.yaml", "docker/sandbox.compose.example.yaml"):
+              yaml.safe_load(open(f))
+              print(f, "ok")
+          EOF
+
+      - name: --print (native mode)
+        run: |
+          out="$(bash docker/sandbox.sh --no-compose --print "$PWD")"
+          echo "$out" | grep -F -- "-v $PWD:/home/sandbox/workspace"
+          echo "$out" | grep -F -- "-v agtx-data:/home/sandbox/.config/agtx"
+
+      - name: --print (extra mounts)
+        run: |
+          out="$(bash docker/sandbox.sh --no-compose --print --mount "$PWD:/sandbox/mounts/p:ro" "$PWD")"
+          echo "$out" | grep -F -- "-v $PWD:/sandbox/mounts/p:ro"
+          out2="$(bash docker/sandbox.sh --no-compose --print --mount "$PWD" "$PWD")"
+          echo "$out2" | grep -F -- "-v $PWD:/sandbox/mounts/$(basename "$PWD"):ro"
+
+      - name: --print (env + file sources)
+        run: |
+          printf '# comment\n\n%s:/sandbox/mounts/fromfile:rw\n' "$PWD" > mounts.conf
+          AGTX_SANDBOX_MOUNTS="$PWD:/sandbox/mounts/fromenv:ro" \
+            bash docker/sandbox.sh --no-compose --print --mounts-file mounts.conf "$PWD" \
+            | grep -F -- "-v $PWD:/sandbox/mounts/fromenv:ro"
+          AGTX_SANDBOX_MOUNTS="$PWD:/sandbox/mounts/fromenv:ro" \
+            bash docker/sandbox.sh --no-compose --print --mount "$PWD:/sandbox/mounts/fromenv:rw" "$PWD" \
+            | grep -F -- "-v $PWD:/sandbox/mounts/fromenv:rw"
+
+      - name: --print (error cases)
+        run: |
+          set +e
+          bash docker/sandbox.sh --no-compose --print --mount /nonexistent-xyz:/sandbox/mounts/x >/dev/null 2>&1
+          [ $? -ne 0 ]
+          bash docker/sandbox.sh --no-compose --print --mount "$PWD:/claude-host" >/dev/null 2>&1
+          [ $? -ne 0 ]
+          bash docker/sandbox.sh --no-compose --print --mount "$PWD:/home/sandbox/workspace" >/dev/null 2>&1
+          [ $? -ne 0 ]
+          bash docker/sandbox.sh --no-compose --print --mount "$PWD:/x:maybe" >/dev/null 2>&1
+          [ $? -ne 0 ]
+
+      - name: --print (compose mode)
+        run: |
+          out="$(bash docker/sandbox.sh --compose --print --mount "$PWD:/sandbox/mounts/p:rw" "$PWD")"
+          echo "$out" | grep -F -- "$PWD:/sandbox/mounts/p:rw"
+          echo "$out" | grep -F "compose" | grep -F "build"
+          echo "$out" | grep -F "up -d"
+          echo "$out" | grep -F "down --remove-orphans"

@@ -1,0 +1,23 @@
+# User override for the agtx sandbox (compose mode)
+#
+# Copy to docker/sandbox.compose.yaml (or point AGTX_SANDBOX_COMPOSE_FILE at
+# this file) — sandbox.sh then detects it and switches to compose mode
+# automatically. Entries are merged over the canonical base
+# (docker/docker-compose.yaml); add entries under services.agtx.volumes.
+#
+#   ro  = read-only (the safe default)
+#   rw  = read-write — only when the agent must modify the path
+#
+# The sandbox refuses to start if a host path does not exist (docker would
+# otherwise silently create it, often root-owned). Reserved targets
+# (/home/sandbox/workspace, /claude-host, /opencode-host, ...) are rejected.
+#
+# Plain --mount flags / AGTX_SANDBOX_MOUNTS work in compose mode too; this
+# file is for persistent, committable per-project paths.
+services:
+  agtx:
+    volumes:
+      # read-only shared data the agent may consult
+      - ~/data:/sandbox/mounts/data:ro
+      # a second repository the agent may edit
+      - ~/code/sibling-project:/sandbox/mounts/sibling:rw
