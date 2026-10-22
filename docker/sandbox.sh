@@ -31,6 +31,20 @@ command -v "$CR" &>/dev/null || error "no container runtime found — install do
 # Rootless podman remaps UIDs; keep-id preserves host ownership on bind mounts
 USERNS=""; [ "$CR" = "podman" ] && [ "$(id -u)" -ne 0 ] && USERNS="--userns=keep-id"
 
+# `--network host` lets the sandbox reach the host's own services. That is what a
+# locally-hosted model needs (e.g. Ollama on localhost, which a bridge network
+# would hide behind the container's own loopback). Claude needs no such access —
+# it talks to Anthropic's cloud — so this only matters for local-model setups.
+# Podman on macOS cannot set up host networking (crun fails with an OCI
+# permission error), so it is off by default there; AGTX_HOST_NETWORK=1 forces
+# it on and =0 forces it off.
+NET=""
+case "${AGTX_HOST_NETWORK:-}" in
+    1) NET="--network host" ;;
+    0) NET="" ;;
+    *) [ "$(uname -s)" != "Darwin" ] && NET="--network host" ;;
+esac
+
 RAW_PROJECT="${1:-$(pwd)}"
 
 if [ ! -d "$RAW_PROJECT" ]; then
@@ -110,14 +124,9 @@ fi
 # Started detached so the credential can be planted before any agent launches,
 # then attached so the TUI behaves exactly as before. `--rm` still cleans up on
 # exit, and `attach` returns the container's exit code.
-#
-# `--network host` lets the sandbox reach the host's own services. That is what a
-# locally-hosted model needs (e.g. Ollama on localhost, which a bridge network
-# would hide behind the container's own loopback). Claude needs no such access —
-# it talks to Anthropic's cloud — so this only matters for local-model setups.
 CID=$("$CR" run -d -it --rm \
     $USERNS \
-    --network host \
+    $NET \
     --security-opt no-new-privileges:true \
     --cap-drop ALL \
     --cap-add CHOWN \
