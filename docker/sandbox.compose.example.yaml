@@ -8,12 +8,14 @@
 #   ro  = read-only (the safe default)
 #   rw  = read-write — only when the agent must modify the path
 #
-# The sandbox refuses to start if a host path does not exist (docker would
-# otherwise silently create it, often root-owned). Reserved targets
-# (/home/sandbox/workspace, /claude-host, /opencode-host, ...) are rejected.
+# Make sure the host paths below exist before running: entries in this file
+# are not validated by sandbox.sh, and the runtime would otherwise create
+# missing ones silently (often root-owned). (--mount / AGTX_SANDBOX_MOUNTS /
+# --mounts-file entries ARE validated and refused if missing.)
 #
-# Plain --mount flags / AGTX_SANDBOX_MOUNTS work in compose mode too; this
-# file is for persistent, committable per-project paths.
+# Plain --mount flags / AGTX_SANDBOX_MOUNTS work in compose mode too and are
+# merged in as well; this file is for persistent, committable per-project
+# paths.
 services:
   agtx:
     volumes:

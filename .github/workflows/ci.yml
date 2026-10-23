@@ -119,6 +119,13 @@ jobs:
           [ $? -ne 0 ]
           bash docker/sandbox.sh --no-compose --print --mount "$PWD:/x:maybe" >/dev/null 2>&1
           [ $? -ne 0 ]
+          # normalisation bypasses: trailing slash, double slash, dotdot
+          bash docker/sandbox.sh --no-compose --print --mount "$PWD:/home/sandbox/workspace/" >/dev/null 2>&1
+          [ $? -ne 0 ]
+          bash docker/sandbox.sh --no-compose --print --mount "$PWD://home/sandbox/workspace" >/dev/null 2>&1
+          [ $? -ne 0 ]
+          bash docker/sandbox.sh --no-compose --print --mount "$PWD:/sandbox/mounts/../.." >/dev/null 2>&1
+          [ $? -ne 0 ]
 
       - name: --print (compose mode)
         run: |

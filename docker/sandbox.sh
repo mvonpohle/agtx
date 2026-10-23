@@ -162,6 +162,18 @@ add_mount() {
     fi
     case "$dst" in /*) ;; *) error "mount container path must be absolute (got: $2)"; esac
     case "$mode" in ro|rw) ;; *) error "mount mode must be 'ro' or 'rw' (got: $3)"; esac
+    # Normalise the target so the reserved check below can't be dodged:
+    # collapse duplicate slashes ('//home/sandbox/workspace' == the reserved
+    # path), strip trailing slashes, and reject '..' segments — the runtime
+    # resolves all of these, which is how e.g. /sandbox/mounts/../.. would
+    # shadow '/'.
+    dst="$(printf '%s' "$dst" | tr -s '/')"
+    while [ "$dst" != "/" ] && [ "${dst%/}" != "$dst" ] && [ "${dst%/}" != "" ]; do
+        dst="${dst%/}"
+    done
+    case "$dst" in
+        ..|../*|*/..|*/../*) error "mount container path must not contain '..': $2" ;;
+    esac
     if is_reserved_dst "$dst"; then
         error "container path collides with a reserved sandbox path: $dst"
     fi
@@ -560,7 +572,7 @@ if [ "$COMPOSE_MODE" -eq 1 ]; then
         sleep 1
     done
     if [ -z "$CID" ]; then
-        error "sandbox container did not start — check: ${CR} compose ${COMPOSE_FILES[*]} logs"
+        error "sandbox container did not start — check: ${CR} compose ${COMPOSE_FILES[*]} logs agtx"
     fi
 
     if [ -n "$CLAUDE_CREDS" ]; then
