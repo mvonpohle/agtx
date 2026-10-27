@@ -592,11 +592,13 @@ mod tests {
     fn the_orchestrator_command_reaches_claude_with_its_json_intact() {
         let agent = crate::agent::Agent::new("claude", "claude", "", "");
         let ops = crate::agent::CodingAgent::new(agent);
-        let json = r#"{"type":"stdio","command":"/bin/agtx","args":["mcp-serve","/tmp/repo"]}"#;
         let cmd =
-            crate::agent::AgentOperations::build_orchestrator_command(&ops, json, "/bin/agtx");
+            crate::agent::AgentOperations::build_orchestrator_command(&ops, "/bin/agtx", "/tmp/repo");
         let (ok, seen) = argv_seen_by_fake_claude(&cmd);
         assert!(ok, "the wrapped orchestrator command must run: {seen}");
+        // The JSON is built from (agtx_bin, project_path); serde_json's Map is
+        // a BTreeMap, so keys serialize alphabetically.
+        let json = r#"{"args":["mcp-serve","/tmp/repo"],"command":"/bin/agtx","type":"stdio"}"#;
         assert!(
             seen.lines().any(|l| l == json),
             "claude must receive the JSON as one intact argument; got:\n{seen}"
@@ -604,18 +606,20 @@ mod tests {
     }
 
     /// ...and a project path containing an apostrophe still arrives intact,
-    /// because the caller escapes it for the single-quoted word it lands in.
+    /// because the impl escapes it for the single-quoted word it lands in.
     #[cfg(unix)]
     #[test]
     fn an_apostrophe_in_the_mcp_json_survives_both_layers() {
         let agent = crate::agent::Agent::new("claude", "claude", "", "");
         let ops = crate::agent::CodingAgent::new(agent);
-        let raw = r#"{"args":["mcp-serve","/tmp/it's a repo"]}"#;
-        let escaped = raw.replace('\'', "'\"'\"'");
-        let cmd =
-            crate::agent::AgentOperations::build_orchestrator_command(&ops, &escaped, "/bin/agtx");
+        let cmd = crate::agent::AgentOperations::build_orchestrator_command(
+            &ops,
+            "/bin/agtx",
+            "/tmp/it's a repo",
+        );
         let (ok, seen) = argv_seen_by_fake_claude(&cmd);
         assert!(ok, "the wrapped orchestrator command must run: {seen}");
+        let raw = r#"{"args":["mcp-serve","/tmp/it's a repo"],"command":"/bin/agtx","type":"stdio"}"#;
         assert!(
             seen.lines().any(|l| l == raw),
             "claude must receive the unescaped JSON; got:\n{seen}"

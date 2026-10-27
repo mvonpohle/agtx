@@ -1067,8 +1067,11 @@ impl App {
             let tmux_ops = Arc::clone(&app.state.tmux_ops);
             let ready_flag = Arc::clone(&app.state.orchestrator_ready);
             let auto_trust = app.state.config.auto_trust;
+            // The orchestrator runs the project's default agent, not claude —
+            // pass its name so readiness detection uses its real indicators.
+            let agent_name = app.state.config.default_agent.clone();
             std::thread::spawn(move || {
-                if wait_for_agent_ready(&tmux_ops, &orch_target, Some("claude"), auto_trust)
+                if wait_for_agent_ready(&tmux_ops, &orch_target, Some(agent_name.as_str()), auto_trust)
                     .is_some()
                 {
                     ready_flag.store(true, Ordering::Release);
@@ -8141,8 +8144,12 @@ impl App {
                 let ready_flag = Arc::clone(&self.state.orchestrator_ready);
                 let target = orch_target.clone();
                 let auto_trust = self.state.config.auto_trust;
+                // The orchestrator runs the project's default agent, not
+                // claude — pass its name so readiness detection uses its real
+                // indicators.
+                let agent_name = self.state.config.default_agent.clone();
                 std::thread::spawn(move || {
-                    if wait_for_agent_ready(&tmux_ops, &target, Some("claude"), auto_trust)
+                    if wait_for_agent_ready(&tmux_ops, &target, Some(agent_name.as_str()), auto_trust)
                         .is_some()
                     {
                         ready_flag.store(true, Ordering::Release);
@@ -8193,24 +8200,16 @@ impl App {
         let agent = self.state.agent_registry.get(&default_agent);
         let project_path_str = project_path.to_string_lossy().to_string();
 
-        // Build MCP registration JSON for the agtx server
         let agtx_bin = std::env::current_exe()
             .unwrap_or_else(|_| PathBuf::from("agtx"))
             .to_string_lossy()
             .to_string();
-        let mcp_json = serde_json::json!({
-            "type": "stdio",
-            "command": agtx_bin,
-            "args": ["mcp-serve", &project_path_str]
-        });
-        // Escaped for the single-quoted word it becomes inside the orchestrator
-        // command (`add-json … '<json>'`). Only reachable when the project path
-        // contains an apostrophe. The *outer* `sh -c` layer is handled by
-        // `single_quote` in create_window — pre-escaping for it here would
-        // double-escape and break the command.
-        let mcp_json_str = mcp_json.to_string().replace('\'', "'\"'\"'");
-
-        let agent_cmd = agent.build_orchestrator_command(&mcp_json_str, &agtx_bin);
+        // MCP registration is agent-appropriate and self-cleaning: Claude
+        // registers via `claude mcp add-json` inside the returned command
+        // string; file-based agents get the entry merged into their config
+        // file at the project root (this window's working directory) with the
+        // restore chained after the launch. Both clean up on exit.
+        let agent_cmd = agent.build_orchestrator_command(&agtx_bin, &project_path_str);
 
         // Ensure project tmux session exists
         ensure_project_tmux_session(
@@ -9584,6 +9583,7 @@ const AGTX_WRITTEN_PATHS: &[&str] = &[
     ".agents/mcp_config.json",
     ".agents/hooks.json",
     ".agents/skills/agtx-*/",
+    "opencode.json",
     ".opencode/command/agtx-*.md",
     ".github/agents/agtx/",
     ".pi/mcp.json",
