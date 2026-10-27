@@ -626,6 +626,58 @@ mod tests {
         );
     }
 
+    /// The file-based orchestrator command is `<agent>; <cleanup>`, and the
+    /// cleanup — not the launch — is the part the quoting layers could break:
+    /// prove it actually runs, with an apostrophe in the project path so both
+    /// layers have to work. The user's pre-existing config must be back
+    /// byte-for-byte once the (fake) agent exits.
+    #[cfg(unix)]
+    #[test]
+    fn the_file_based_cleanup_survives_both_layers() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().expect("tempdir");
+        let project = root.path().join("it's a repo");
+        std::fs::create_dir_all(&project).expect("mkdir");
+        let user_cfg = r#"{"theme":"dark"}"#;
+        std::fs::write(project.join("opencode.json"), user_cfg).expect("seed config");
+
+        let agent = crate::agent::Agent::new("opencode", "opencode", "", "");
+        let ops = crate::agent::CodingAgent::new(agent);
+        let cmd = crate::agent::AgentOperations::build_orchestrator_command(
+            &ops,
+            "/bin/agtx",
+            project.to_string_lossy().as_ref(),
+        );
+        let merged = std::fs::read_to_string(project.join("opencode.json")).expect("read merged");
+        assert!(merged.contains("agtx"), "precondition: the entry was merged in: {merged}");
+
+        let fake_dir = tempfile::tempdir().expect("tempdir");
+        let fake = fake_dir.path().join("opencode");
+        std::fs::write(&fake, "#!/bin/sh\nexit 0\n").expect("write fake");
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let path = format!(
+            "{}:{}",
+            fake_dir.path().display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(wrap_launch_command(&cmd, false))
+            .env("PATH", path)
+            .output()
+            .expect("sh should run");
+        assert!(
+            out.status.success(),
+            "the wrapped orchestrator command must run: {:?}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.join("opencode.json")).expect("read after"),
+            user_cfg,
+            "cleanup must restore the user's config byte-for-byte"
+        );
+    }
+
     #[test]
     fn the_pane_drops_to_a_shell_only_when_asked() {
         assert!(wrap_launch_command("claude", true).ends_with("; exec $SHELL"));

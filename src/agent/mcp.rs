@@ -129,7 +129,9 @@ pub(crate) fn register(
             if existing.contains("[mcp_servers.agtx]") {
                 // Already registered; the entry is deterministic per project,
                 // so leave the user's file alone — and there is nothing to
-                // clean up.
+                // clean up. (Nothing was written, so the backup taken above
+                // goes back into the dust it came from.)
+                drop_backup(&backup_path);
                 return None;
             }
             // Escape for the double-quoted TOML string (same rule as the Grok
@@ -151,15 +153,26 @@ pub(crate) fn register(
     if let Some(parent) = file.parent() {
         if std::fs::create_dir_all(parent).is_err() {
             tracing::warn!("orchestrator MCP: cannot create {}", parent.display());
+            drop_backup(&backup_path);
             return None;
         }
     }
     if std::fs::write(&file, &content).is_err() {
         tracing::warn!("orchestrator MCP: cannot write {}", file.display());
+        drop_backup(&backup_path);
         return None;
     }
 
     Some(cleanup_fragment(&file, backup_path.as_deref()))
+}
+
+/// Remove a backup taken before a write that did not happen: an orphan in the
+/// system temp dir would otherwise outlive the orchestrator session by
+/// months.
+fn drop_backup(backup_path: &Option<PathBuf>) {
+    if let Some(bak) = backup_path {
+        let _ = std::fs::remove_file(bak);
+    }
 }
 
 /// Copy `file` to a unique name under the system temp dir; the cleanup
@@ -208,6 +221,17 @@ fn read_json_object(path: &Path) -> Map<String, Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The first single-quoted word of a restore cleanup fragment is the
+    /// backup. These tests build the fragment but never run it, so they remove
+    /// it themselves — a test leaving files in the system temp dir is a leak.
+    /// (Backup names are temp-dir + UUID, so no quote can appear inside.)
+    fn remove_backup_from(cleanup: &str) {
+        let rest = cleanup.strip_prefix("cp -f '").unwrap_or("");
+        if let Some(end) = rest.find('\'') {
+            let _ = std::fs::remove_file(&rest[..end]);
+        }
+    }
 
     #[test]
     fn every_file_based_kind_maps_to_a_target() {
@@ -292,6 +316,7 @@ mod tests {
             "{cleanup}"
         );
         assert!(before.contains("dark"), "sanity");
+        remove_backup_from(&cleanup);
     }
 
     #[test]
@@ -316,6 +341,7 @@ mod tests {
         assert!(content.contains(r#"command = "/usr/bin/agtx""#), "{content}");
         assert!(content.contains(r#"args = ["mcp-serve", "/tmp/proj"]"#), "{content}");
         assert!(cleanup.starts_with("cp -f '"), "pre-existing file → restore: {cleanup}");
+        remove_backup_from(&cleanup);
     }
 
     #[test]
