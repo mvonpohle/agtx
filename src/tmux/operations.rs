@@ -240,6 +240,17 @@ fn wrap_launch_command(shell_cmd: &str, keep_shell_on_exit: bool) -> String {
     }
 }
 
+/// A window is present when its `session:window` target appears in the
+/// session's window list — however many times: 0 occurrences = absent,
+/// 1 = present, 2+ (duplicated) = still present.
+///
+/// Membership, not name-resolution: tmux's `list-windows -t` / `kill-window -t`
+/// refuse an ambiguous name, so a duplicated window must be judged by its
+/// presence in the listing, never by resolving it.
+pub fn window_present_in(targets: &[String], target: &str) -> bool {
+    targets.iter().any(|t| t == target)
+}
+
 /// Real implementation using actual tmux commands
 pub struct RealTmuxOps;
 
@@ -347,11 +358,12 @@ impl TmuxOperations for RealTmuxOps {
     }
 
     fn window_exists(&self, target: &str) -> Result<bool> {
-        let output = std::process::Command::new("tmux")
-            .args(["-L", super::AGENT_SERVER])
-            .args(["list-windows", "-t", target])
-            .output()?;
-        Ok(output.status.success())
+        // Membership over the full listing: robust to duplicated names, which
+        // `list-windows -t` (name resolution) refuses as ambiguous. A tmux spawn
+        // failure still surfaces as Err (see `list_window_targets`), so callers
+        // that treat Err as "unknown, leave alone" are unchanged.
+        let targets = self.list_window_targets()?;
+        Ok(window_present_in(&targets, target))
     }
 
     fn send_keys(&self, target: &str, keys: &str) -> Result<()> {
@@ -626,5 +638,20 @@ mod tests {
     fn the_pane_drops_to_a_shell_only_when_asked() {
         assert!(wrap_launch_command("claude", true).ends_with("; exec $SHELL"));
         assert!(!wrap_launch_command("claude", false).contains("exec $SHELL"));
+    }
+
+    #[test]
+    fn existence_is_judged_by_membership_not_name_resolution() {
+        // 0 occurrences → absent.
+        assert!(!window_present_in(&[], "proj:task-abc"));
+        // 1 occurrence → present.
+        assert!(window_present_in(&["proj:task-abc".to_string()], "proj:task-abc"));
+        // 2+ occurrences → still present. This is the case the old `list-windows -t`
+        // name-resolution path got wrong: tmux refused the ambiguous name and read
+        // it as absent, so the board created yet another window.
+        let dup = vec!["proj:task-abc".to_string(), "proj:task-abc".to_string()];
+        assert!(window_present_in(&dup, "proj:task-abc"));
+        // A different target is absent even when other windows are present.
+        assert!(!window_present_in(&["proj:task-abc".to_string()], "proj:task-xyz"));
     }
 }
