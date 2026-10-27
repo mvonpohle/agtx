@@ -4,6 +4,7 @@ pub mod core;
 pub mod db;
 pub mod git;
 pub mod mcp;
+pub mod notify;
 pub mod skills;
 pub mod tmux;
 pub mod tui;

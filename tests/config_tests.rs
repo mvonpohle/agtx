@@ -115,6 +115,7 @@ fn test_merged_config_project_overrides() {
         branch_prefix: None,
         workflow_plugin: None,
         skip_worktree: None,
+        alarm: None,
     };
 
     let merged = MergedConfig::merge(&global, &project);

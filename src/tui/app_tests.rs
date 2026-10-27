@@ -8852,6 +8852,196 @@ fn test_apply_session_refresh_multiple_tasks() {
 }
 
 // =============================================================================
+// Tests for the alarm / focus-grab (bell, standing title, dedup, repeat, badge)
+// =============================================================================
+
+/// Put a live (non-Done) task on the board and seed its resolved phase in the
+/// cache, so `process_alarm` has something to reconcile.
+#[cfg(feature = "test-mocks")]
+fn seed_board_task(
+    app: &mut App,
+    task_id: &str,
+    phase: PhaseStatus,
+    escalation: Option<&str>,
+) {
+    let mut task = Task::new("Needs me", "claude", "test-project");
+    task.id = task_id.to_string();
+    task.status = TaskStatus::Running;
+    task.escalation_note = escalation.map(|s| s.to_string());
+    app.state.board.tasks.push(task);
+    app.state
+        .phase_status_cache
+        .insert(task_id.to_string(), (phase, std::time::Instant::now()));
+}
+
+/// Count the bell rings the recording notifier has captured so far.
+#[cfg(feature = "test-mocks")]
+fn rings(app: &App) -> usize {
+    app.test_notifier()
+        .snapshot()
+        .iter()
+        .filter(|e| e.as_str() == "ring")
+        .count()
+}
+
+/// A task entering an attention state rings the burst, holds the standing title,
+/// and lands in the active set.
+#[test]
+#[cfg(feature = "test-mocks")]
+fn test_alarm_burst_and_title_on_entry() {
+    let mut app = make_test_app();
+    seed_board_task(&mut app, "t1", PhaseStatus::Blocked, None);
+    app.process_alarm(std::time::Instant::now());
+
+    assert!(app.state.alarm_active.contains("t1"), "blocked task is active");
+    assert!(app.state.attention_title_set, "standing title held");
+    assert_eq!(rings(&app), 3, "the default burst is three rings");
+    let events = app.test_notifier().snapshot();
+    assert!(
+        events.iter().any(|e| e.starts_with("title:⚠ agtx: 1")),
+        "the standing title names the count: {events:?}"
+    );
+}
+
+/// Re-running the reconciliation with no change does not re-ring the burst —
+/// that is the dedup that keeps an unresolved task from spamming every pass.
+#[test]
+#[cfg(feature = "test-mocks")]
+fn test_alarm_dedups_repeat_pass() {
+    let mut app = make_test_app();
+    seed_board_task(&mut app, "t1", PhaseStatus::Blocked, None);
+    app.process_alarm(std::time::Instant::now());
+    assert_eq!(rings(&app), 3, "the first pass bursts");
+
+    // A later pass, the task still blocked, nothing new.
+    app.process_alarm(std::time::Instant::now());
+    assert_eq!(rings(&app), 3, "an unchanged active set must not re-burst");
+    assert!(app.state.alarm_active.contains("t1"), "still active");
+}
+
+/// When the task resolves, the alarm clears and the standing title is released.
+#[test]
+#[cfg(feature = "test-mocks")]
+fn test_alarm_clears_and_resets_title() {
+    let mut app = make_test_app();
+    seed_board_task(&mut app, "t1", PhaseStatus::Blocked, None);
+    app.process_alarm(std::time::Instant::now());
+    assert!(app.state.alarm_active.contains("t1"));
+    assert!(app.state.attention_title_set);
+
+    // The agent resumes — Working is not an attention state by default.
+    app.state
+        .phase_status_cache
+        .insert("t1".to_string(), (PhaseStatus::Working, std::time::Instant::now()));
+    app.process_alarm(std::time::Instant::now());
+
+    assert!(
+        !app.state.alarm_active.contains("t1"),
+        "a resolved task leaves the active set"
+    );
+    assert!(!app.state.attention_title_set, "standing title released");
+    let events = app.test_notifier().snapshot();
+    assert!(
+        events.iter().any(|e| e == "title:agtx"),
+        "the title resets to the neutral name: {events:?}"
+    );
+}
+
+/// The "ring it constantly" repeat: once `bell_interval_secs` elapses, a further
+/// pass fires one more ring.
+#[test]
+#[cfg(feature = "test-mocks")]
+fn test_alarm_repeat_bell_after_interval() {
+    let mut app = make_test_app();
+    seed_board_task(&mut app, "t1", PhaseStatus::Blocked, None);
+    let base = std::time::Instant::now();
+    app.process_alarm(base);
+    assert_eq!(rings(&app), 3, "entry bursts, no repeat yet");
+
+    // A pass 6s out: the 5s cadence has elapsed, so exactly one repeat ring.
+    app.process_alarm(base + std::time::Duration::from_secs(6));
+    assert_eq!(
+        rings(&app),
+        4,
+        "one repeat ring after the interval elapses"
+    );
+}
+
+/// A task escalated to the user trips the alarm even while its phase is Working,
+/// and an idle task does not (the default `states` excludes `idle`).
+#[test]
+#[cfg(feature = "test-mocks")]
+fn test_alarm_escalation_and_idle() {
+    let mut app = make_test_app();
+    // Escalated while Working → attention.
+    seed_board_task(&mut app, "esc", PhaseStatus::Working, Some("stuck on auth"));
+    // Idle, not escalated → not attention by default.
+    seed_board_task(&mut app, "idle", PhaseStatus::Idle, None);
+
+    app.process_alarm(std::time::Instant::now());
+
+    assert!(app.state.alarm_active.contains("esc"), "escalation needs the user");
+    assert!(
+        !app.state.alarm_active.contains("idle"),
+        "idle is excluded from the default attention states"
+    );
+}
+
+/// `refresh_project_attention` counts a project's tasks that need the user and
+/// exposes the count for the sidebar/Dashboard badge.
+#[test]
+#[cfg(feature = "test-mocks")]
+fn test_refresh_project_attention_counts_blocked_task() {
+    let _data = redirect_data_dir();
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path();
+
+    let mut app = make_test_app_at(project);
+    // Register the project so it appears in `state.projects`, what the badge
+    // iterates (the global index is empty in the redirected data dir).
+    app.state.projects.push(ProjectInfo {
+        name: "proj".to_string(),
+        path: project.to_string_lossy().to_string(),
+    });
+
+    // One live task whose worktree holds a Blocked hook record — the
+    // TUI-independent truth the badge reads.
+    let worktree = project.join("wt");
+    std::fs::create_dir_all(&worktree).unwrap();
+    let db = Database::open_project(project).unwrap();
+    let mut task = Task::new("Blocked task", "claude", "proj");
+    task.id = "b1".to_string();
+    task.status = TaskStatus::Running;
+    task.worktree_path = Some(worktree.to_string_lossy().to_string());
+    db.create_task(&task).unwrap();
+    drop(db);
+
+    crate::agent::hook_status::write_status(
+        &worktree,
+        "b1",
+        &crate::agent::hook_status::AgentHookStatus {
+            ts: chrono::Utc::now().timestamp(),
+            state: crate::agent::hook_status::HookState::Blocked,
+            session_id: None,
+            transcript_path: None,
+            message: Some("needs permission".into()),
+            tool: None,
+            agent: "claude".into(),
+        },
+    )
+    .unwrap();
+
+    app.refresh_project_attention();
+
+    let key = project.to_string_lossy().to_string();
+    assert_eq!(
+        app.state.project_attention_counts.get(&key),
+        Some(&1),
+        "the blocked task is counted for its project"
+    );
+}
+
+// =============================================================================
 // Tests for popup confirmation handlers
 // =============================================================================
 

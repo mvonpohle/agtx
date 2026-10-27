@@ -74,6 +74,19 @@ impl Database {
         Ok(db)
     }
 
+    /// The on-disk path of a project's database, computed without opening (or
+    /// creating) it.
+    ///
+    /// Lets a caller check existence before opening, so it never materialises an
+    /// empty database for a project it is merely probing — used by the
+    /// cross-project attention badge.
+    pub fn project_db_path(project_path: &Path) -> Option<std::path::PathBuf> {
+        let config_dir = Self::data_root().ok()?;
+        let path_str = project_path.to_string_lossy();
+        let path_hash = Self::hash_path(&path_str);
+        Some(config_dir.join("projects").join(format!("{}.db", path_hash)))
+    }
+
     /// Create a stable hash from a path string for database filename.
     /// Uses SHA-256 (truncated to 16 hex chars) for cross-version stability.
     fn hash_path(path: &str) -> String {

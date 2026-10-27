@@ -408,6 +408,22 @@ struct AppState {
     stuck_task_notified: HashSet<String>,
     // When each task first became Idle (for stuck-task detection)
     stuck_task_idle_since: HashMap<String, Instant>,
+    // Alarm / focus-grab: the injected emitter (stdout in prod, recording in tests).
+    notifier: Arc<dyn crate::notify::Notifier>,
+    // Test-only handle to the `RecordingNotifier` backing `notifier`, so tests can
+    // assert what would have been rung or titled. `None` in prod.
+    notifier_recorder: Option<Arc<crate::notify::RecordingNotifier>>,
+    // Task IDs currently in a user-attention state (blocked/exited/escalated).
+    alarm_active: HashSet<String>,
+    // When the last bell was rung, pacing the "ring it constantly" repeat.
+    last_bell_at: Option<Instant>,
+    // Whether we set the standing attention title (so we know to reset it on clear).
+    attention_title_set: bool,
+    // Per-project count of attention tasks, for the sidebar/Dashboard badge.
+    project_attention_counts: HashMap<String, usize>,
+    // When `project_attention_counts` was last computed (`None` until the first
+    // pass, which always runs so the very first draw is fresh).
+    project_attention_at: Option<Instant>,
     cached_plugin: Option<Option<WorkflowPlugin>>,
     // Transient warning message shown in footer (auto-clears after a few seconds)
     warning_message: Option<(String, Instant)>,
@@ -966,6 +982,13 @@ impl App {
                 merge_conflict_checked: HashSet::new(),
                 stuck_task_notified: HashSet::new(),
                 stuck_task_idle_since: HashMap::new(),
+                notifier: Arc::new(crate::notify::StdoutNotifier),
+                notifier_recorder: None,
+                alarm_active: HashSet::new(),
+                last_bell_at: None,
+                attention_title_set: false,
+                project_attention_counts: HashMap::new(),
+                project_attention_at: None,
                 cached_plugin: None,
                 warning_message: None,
                 plugin_select_popup: None,
@@ -1162,6 +1185,10 @@ impl App {
 
         let config = MergedConfig::merge(&GlobalConfig::default(), &ProjectConfig::default());
 
+        // A recorder the tests can read back: the same Arc as `state.notifier`, so
+        // asserting on it sees exactly what the alarm would have emitted.
+        let test_notifier = Arc::new(crate::notify::RecordingNotifier::new());
+
         let mut app = Self {
             terminal,
             state: AppState {
@@ -1220,6 +1247,13 @@ impl App {
                 merge_conflict_checked: HashSet::new(),
                 stuck_task_notified: HashSet::new(),
                 stuck_task_idle_since: HashMap::new(),
+                notifier: test_notifier.clone(),
+                notifier_recorder: Some(test_notifier.clone()),
+                alarm_active: HashSet::new(),
+                last_bell_at: None,
+                attention_title_set: false,
+                project_attention_counts: HashMap::new(),
+                project_attention_at: None,
                 cached_plugin: None,
                 warning_message: None,
                 plugin_select_popup: None,
@@ -1622,6 +1656,9 @@ impl App {
     }
 
     pub fn draw(&mut self) -> Result<()> {
+        // Refresh the cross-project attention badge before rendering (bounded by a
+        // ~2s cache, so this is cheap on repeated draws).
+        self.refresh_project_attention();
         let state = &self.state;
         self.terminal.draw(|frame| {
             let area = frame.area();
@@ -3333,7 +3370,18 @@ impl App {
                 };
 
                 let marker = if is_current { "▌" } else { " " };
-                ListItem::new(format!("{} {}", marker, project.name)).style(style)
+                // Cross-project attention badge: "⚠ N" for projects that have tasks
+                // needing the user (see `refresh_project_attention`).
+                let badge = if state.config.alarm.modes.iter().any(|m| m == "badge") {
+                    state
+                        .project_attention_counts
+                        .get(&project.path)
+                        .map(|n| format!("  ⚠ {}", n))
+                        .unwrap_or_default()
+                } else {
+                    String::new()
+                };
+                ListItem::new(format!("{} {}{}", marker, project.name, badge)).style(style)
             })
             .collect();
 
@@ -3449,7 +3497,17 @@ impl App {
                     } else {
                         Style::default()
                     };
-                    ListItem::new(format!("  {}", project.name)).style(style)
+                    // Cross-project attention badge (see `refresh_project_attention`).
+                    let badge = if state.config.alarm.modes.iter().any(|m| m == "badge") {
+                        state
+                            .project_attention_counts
+                            .get(&project.path)
+                            .map(|n| format!("  ⚠ {}", n))
+                            .unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    ListItem::new(format!("  {}{}", project.name, badge)).style(style)
                 })
                 .collect();
 
@@ -8845,6 +8903,179 @@ impl App {
             .unwrap_or(false)
     }
 
+    // --- Test-only accessor for the alarm notifier (see `process_alarm`) ---
+    // `app_tests` is a child module and reads `app.state.*` directly; the one
+    // getter worth keeping is this, since downcasting the injected
+    // `Arc<dyn Notifier>` to the recorder is the awkward part.
+    #[cfg(any(test, feature = "test-mocks"))]
+    pub fn test_notifier(&self) -> &crate::notify::RecordingNotifier {
+        self.state.notifier_recorder.as_ref().expect("test notifier not set")
+    }
+
+    /// Reconcile the alarm against the current board, once per session-refresh
+    /// pass: ring a burst for tasks that newly need the user, hold the standing
+    /// title while anything is unresolved, and re-ring the bell on the configured
+    /// cadence ("ring it constantly"). Terminal-only — see `src/notify.rs`.
+    ///
+    /// Because this runs on the refresh cadence (a couple of seconds) rather than
+    /// on its own timer, the repeating bell is paced by that cadence plus
+    /// `bell_interval_secs`; no extra thread is spawned.
+    fn process_alarm(&mut self, now: Instant) {
+        let cfg = &self.state.config.alarm;
+        if !cfg.enabled {
+            return;
+        }
+        let wants_bell = cfg.modes.iter().any(|m| m == "bell");
+        let wants_title = cfg.modes.iter().any(|m| m == "title");
+
+        // Which board tasks currently need the user, by their resolved phase and
+        // any escalation note. Done tasks are never a target.
+        let mut active = std::collections::HashSet::new();
+        for task in &self.state.board.tasks {
+            if task.status == TaskStatus::Done {
+                continue;
+            }
+            let has_esc = task
+                .escalation_note
+                .as_deref()
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+            let attention = match self
+                .state
+                .phase_status_cache
+                .get(&task.id)
+                .map(|(p, _)| *p)
+            {
+                Some(phase) => crate::notify::is_attention(phase, has_esc, &cfg.states),
+                // Escalated but no phase resolved yet — still needs the user.
+                None => has_esc,
+            };
+            if attention {
+                active.insert(task.id.clone());
+            }
+        }
+
+        // A burst whenever at least one task newly needs the user. Deduped against
+        // the previous pass, mirroring `stuck_task_notified`.
+        let newly_entered: Vec<&String> = active.difference(&self.state.alarm_active).collect();
+        if !newly_entered.is_empty() && wants_bell {
+            for _ in 0..cfg.bell_burst.max(1) {
+                self.state.notifier.ring();
+            }
+            self.state.last_bell_at = Some(now);
+        }
+        self.state.alarm_active = active.clone();
+
+        // Standing title: set once when attention appears, reset when it clears.
+        if !active.is_empty() && !self.state.attention_title_set {
+            if wants_title {
+                let text = format!(
+                    "{}agtx: {} need input",
+                    cfg.title_prefix,
+                    active.len()
+                );
+                self.state.notifier.set_title(&text);
+            }
+            self.state.attention_title_set = true;
+        } else if active.is_empty() && self.state.attention_title_set {
+            self.state.notifier.set_title("agtx");
+            self.state.attention_title_set = false;
+        }
+
+        // Repeating bell: keep ringing while anything is unresolved, at the
+        // configured cadence. Skips the pass that just fired the burst above.
+        if !active.is_empty() && cfg.bell_repeat && wants_bell {
+            let interval = std::time::Duration::from_secs(cfg.bell_interval_secs.max(1));
+            let due = match self.state.last_bell_at {
+                Some(t) => now >= t + interval,
+                None => true,
+            };
+            if due {
+                self.state.notifier.ring();
+                self.state.last_bell_at = Some(now);
+            }
+        }
+    }
+
+    /// Compute, per project, how many of its tasks currently need the user, for the
+    /// sidebar/Dashboard badge. Reads each project's DB and each task's agent hook
+    /// status — the TUI-independent truth — so it also covers projects with no TUI
+    /// open. Cached for ~2s so a large project list stays cheap to re-render, and
+    /// probes only projects whose DB already exists (never creates one).
+    fn refresh_project_attention(&mut self) {
+        let now = Instant::now();
+        // `None` means "never computed", so the first pass always runs and the
+        // very first draw shows fresh data; afterwards we throttle to ~2s.
+        if let Some(last) = self.state.project_attention_at {
+            if now.duration_since(last) < std::time::Duration::from_secs(2) {
+                return;
+            }
+        }
+        let cfg = &self.state.config.alarm;
+        let now_secs = chrono::Utc::now().timestamp();
+        let mut counts = std::collections::HashMap::new();
+        for project in &self.state.projects {
+            let Some(db_path) = Database::project_db_path(Path::new(&project.path)) else {
+                continue;
+            };
+            if !db_path.exists() {
+                continue;
+            }
+            let Ok(db) = Database::open_project(Path::new(&project.path)) else {
+                continue;
+            };
+            let Ok(tasks) = db.get_all_tasks() else {
+                continue;
+            };
+            let mut n = 0usize;
+            for task in &tasks {
+                if task.status == TaskStatus::Done {
+                    continue;
+                }
+                let has_esc = task
+                    .escalation_note
+                    .as_deref()
+                    .map(|s| !s.trim().is_empty())
+                    .unwrap_or(false);
+                let attention = match task.worktree_path.as_deref() {
+                    Some(worktree) => match crate::agent::hook_status::read_status(
+                        Path::new(worktree),
+                        &task.id,
+                        now_secs,
+                    ) {
+                        Some(status) => {
+                            let phase = match status.state {
+                                crate::agent::hook_status::HookState::Blocked => {
+                                    PhaseStatus::Blocked
+                                }
+                                crate::agent::hook_status::HookState::Ended => {
+                                    PhaseStatus::Exited
+                                }
+                                crate::agent::hook_status::HookState::Waiting => {
+                                    PhaseStatus::Idle
+                                }
+                                crate::agent::hook_status::HookState::Working => {
+                                    PhaseStatus::Working
+                                }
+                            };
+                            crate::notify::is_attention(phase, has_esc, &cfg.states)
+                        }
+                        None => has_esc,
+                    },
+                    None => has_esc,
+                };
+                if attention {
+                    n += 1;
+                }
+            }
+            if n > 0 {
+                counts.insert(project.path.clone(), n);
+            }
+        }
+        self.state.project_attention_counts = counts;
+        self.state.project_attention_at = Some(now);
+    }
+
     /// Apply results from the background session refresh thread.
     fn apply_session_refresh(&mut self, result: SessionRefreshResult) {
         let now = Instant::now();
@@ -9184,6 +9415,10 @@ impl App {
                     .remove(&task_status.task_id);
             }
         }
+
+        // Alarm / focus-grab: reconcile against the whole board now that every
+        // task's phase for this pass is resolved. Fire-and-forget; never blocks.
+        self.process_alarm(now);
 
         // One commit for the whole pass, and only when something is reading.
         // Pruning rides along inside it — see `publish_task_runtime`; it is done

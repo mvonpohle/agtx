@@ -54,6 +54,10 @@ pub struct GlobalConfig {
     /// per-invocation equivalent, for CI and containers.
     #[serde(default = "default_update_check")]
     pub update_check: bool,
+
+    /// Alarm / focus-grab settings (bell, standing title, cross-project badge).
+    #[serde(default)]
+    pub alarm: AlarmConfig,
 }
 
 fn default_update_check() -> bool {
@@ -75,6 +79,7 @@ impl Default for GlobalConfig {
             agent_hooks: default_agent_hooks(),
             auto_trust: false,
             update_check: default_update_check(),
+            alarm: AlarmConfig::default(),
         }
     }
 }
@@ -246,6 +251,80 @@ fn default_true() -> bool {
     true
 }
 
+/// Alarm / focus-grab: how agtx grabs your attention when a task needs you.
+///
+/// Terminal-only by design — no spawned processes, no OS notifications. `states`
+/// names which task conditions fire it and `modes` names which mechanisms are
+/// used; both are user-configurable subsets. The bell is the "sound" and can ring
+/// repeatedly (`bell_repeat`) while a task stays in an attention state, so a single
+/// easy-to-miss ding becomes a persistent one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlarmConfig {
+    /// Master switch. When false nothing fires.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Which task states fire the alarm. Any subset of `"blocked"`, `"exited"`,
+    /// `"idle"`, `"escalation"`.
+    #[serde(default = "default_alarm_states")]
+    pub states: Vec<String>,
+
+    /// Which mechanisms fire. Any subset of `"bell"`, `"title"`, `"badge"`.
+    #[serde(default = "default_alarm_modes")]
+    pub modes: Vec<String>,
+
+    /// How many times the bell rings when a task first needs attention.
+    #[serde(default = "default_alarm_bell_burst")]
+    pub bell_burst: u32,
+
+    /// Keep re-ringing the bell while a task stays in an attention state, at
+    /// `bell_interval_secs` cadence, until it clears or you acknowledge.
+    #[serde(default = "default_true")]
+    pub bell_repeat: bool,
+
+    /// Cadence (seconds) between repeat bell rings while unresolved.
+    #[serde(default = "default_alarm_bell_interval")]
+    pub bell_interval_secs: u64,
+
+    /// Prefix for the standing title, e.g. `"⚠ "`.
+    #[serde(default = "default_alarm_title_prefix")]
+    pub title_prefix: String,
+}
+
+fn default_alarm_states() -> Vec<String> {
+    vec!["blocked".into(), "exited".into(), "escalation".into()]
+}
+
+fn default_alarm_modes() -> Vec<String> {
+    vec!["bell".into(), "title".into(), "badge".into()]
+}
+
+fn default_alarm_bell_burst() -> u32 {
+    3
+}
+
+fn default_alarm_bell_interval() -> u64 {
+    5
+}
+
+fn default_alarm_title_prefix() -> String {
+    "⚠ ".to_string()
+}
+
+impl Default for AlarmConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            states: default_alarm_states(),
+            modes: default_alarm_modes(),
+            bell_burst: default_alarm_bell_burst(),
+            bell_repeat: true,
+            bell_interval_secs: default_alarm_bell_interval(),
+            title_prefix: default_alarm_title_prefix(),
+        }
+    }
+}
+
 /// Project-specific configuration (stored in .agtx/config.toml)
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProjectConfig {
@@ -282,6 +361,9 @@ pub struct ProjectConfig {
     /// Skip git worktree creation — agent works directly in the project root.
     /// Useful when the repo is already an isolated environment (e.g. Docker container).
     pub skip_worktree: Option<bool>,
+
+    /// Override the alarm / focus-grab settings for this project (whole-section).
+    pub alarm: Option<AlarmConfig>,
 }
 
 /// Serialise `value` over the TOML already at `path`, keeping everything agtx
@@ -483,9 +565,10 @@ const GLOBAL_MANAGED: ManagedKeys = ManagedKeys {
 /// `ProjectConfig` is optional all the way down: every field can be cleared.
 const PROJECT_MANAGED: ManagedKeys = ManagedKeys {
     root: &[
-        // `agents` is itself optional here, so clearing it must drop the whole
-        // `[agents]` section rather than leaving an empty header behind.
+        // `agents` and `alarm` are themselves optional here, so clearing either
+        // must drop the whole section rather than leaving an empty header behind.
         "agents",
+        "alarm",
         "default_agent",
         "base_branch",
         "github_url",
@@ -497,7 +580,12 @@ const PROJECT_MANAGED: ManagedKeys = ManagedKeys {
         "branch_prefix",
         "skip_worktree",
     ],
-    nested: &[("agents", &["research", "planning", "running", "review"])],
+    nested: &[
+        ("agents", &["research", "planning", "running", "review"]),
+        // Every `AlarmConfig` field is required (always re-emitted), so none can
+        // be individually cleared — the section is dropped whole via `root`.
+        ("alarm", &[]),
+    ],
 };
 
 impl GlobalConfig {
@@ -637,6 +725,9 @@ pub struct MergedConfig {
     /// Global-only: a project does not get to decide whether the user is told
     /// about agtx releases.
     pub update_check: bool,
+    /// Alarm / focus-grab settings, resolved: the project override if present,
+    /// else the global defaults.
+    pub alarm: AlarmConfig,
 }
 
 impl MergedConfig {
@@ -675,6 +766,7 @@ impl MergedConfig {
             agent_hooks: global.agent_hooks,
             auto_trust: global.auto_trust,
             update_check: global.update_check,
+            alarm: project.alarm.clone().unwrap_or_else(|| global.alarm.clone()),
             branch_prefix: project
                 .branch_prefix
                 .clone()
@@ -1057,6 +1149,7 @@ mod managed_keys_tests {
             workflow_plugin: Some("gsd".into()),
             branch_prefix: Some("task".into()),
             skip_worktree: Some(false),
+            alarm: Some(AlarmConfig::default()),
         };
         let mut doc = toml_edit::ser::to_document(&config).unwrap();
         // The writer expands inline tables before merging, so the guard has to
@@ -1104,5 +1197,96 @@ mod managed_keys_tests {
                 "`agents.{key}` can be cleared but would not be removed"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod alarm_tests {
+    use super::*;
+
+    #[test]
+    fn alarm_config_defaults_are_sane() {
+        let a = AlarmConfig::default();
+        assert!(a.enabled);
+        assert_eq!(
+            a.states,
+            vec!["blocked".to_string(), "exited".to_string(), "escalation".to_string()]
+        );
+        assert_eq!(a.modes, vec!["bell".to_string(), "title".to_string(), "badge".to_string()]);
+        assert_eq!(a.bell_burst, 3);
+        assert!(a.bell_repeat);
+        assert_eq!(a.bell_interval_secs, 5);
+        assert_eq!(a.title_prefix, "⚠ ");
+    }
+
+    /// A user file need not name every field; the ones it omits keep their defaults.
+    #[test]
+    fn alarm_config_partial_section_fills_defaults() {
+        let a: AlarmConfig = toml::from_str(
+            r#"
+            bell_burst = 7
+            states = ["blocked"]
+            "#,
+        )
+        .unwrap();
+        assert!(a.enabled, "omitted `enabled` keeps the default true");
+        assert_eq!(a.bell_burst, 7);
+        assert_eq!(a.states, vec!["blocked".to_string()]);
+        assert_eq!(a.modes, vec!["bell".to_string(), "title".to_string(), "badge".to_string()]);
+        assert!(a.bell_repeat);
+        assert_eq!(a.bell_interval_secs, 5);
+        assert_eq!(a.title_prefix, "⚠ ");
+    }
+
+    /// The project override replaces the whole `[alarm]` section: the resolved
+    /// config is the project's when present, the global's when absent.
+    #[test]
+    fn merged_config_resolves_alarm_from_project_or_global() {
+        let global = GlobalConfig {
+            alarm: AlarmConfig {
+                bell_burst: 9,
+                ..AlarmConfig::default()
+            },
+            ..GlobalConfig::default()
+        };
+
+        // No project override → the global section wins.
+        let project = ProjectConfig::default();
+        assert!(project.alarm.is_none());
+        let merged = MergedConfig::merge(&global, &project);
+        assert_eq!(merged.alarm.bell_burst, 9);
+
+        // A project override present → it wins wholesale.
+        let project = ProjectConfig {
+            alarm: Some(AlarmConfig {
+                bell_burst: 2,
+                ..AlarmConfig::default()
+            }),
+            ..ProjectConfig::default()
+        };
+        let merged = MergedConfig::merge(&global, &project);
+        assert_eq!(merged.alarm.bell_burst, 2);
+    }
+
+    /// `GlobalConfig` parses a file with no `[alarm]` section at all (filling
+    /// defaults) and honours a full section when present.
+    #[test]
+    fn global_config_parses_alarm_section() {
+        let g: GlobalConfig = toml::from_str(
+            r#"
+            default_agent = "claude"
+            [alarm]
+            enabled = false
+            bell_burst = 1
+            "#,
+        )
+        .unwrap();
+        assert!(!g.alarm.enabled);
+        assert_eq!(g.alarm.bell_burst, 1);
+
+        // No section at all → the defaults.
+        let g: GlobalConfig = toml::from_str(r#"default_agent = "claude""#).unwrap();
+        assert!(g.alarm.enabled);
+        assert_eq!(g.alarm.bell_burst, 3);
     }
 }
