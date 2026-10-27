@@ -934,7 +934,9 @@ cp docker/sandbox.compose.example.yaml docker/sandbox.compose.yaml
 Your override file is merged over the canonical base
 (`docker/docker-compose.yaml`); add entries under `services.agtx.volumes`.
 `--mount` flags, `AGTX_SANDBOX_MOUNTS`, and `--mounts-file` work in compose
-mode too and are merged in as well.
+mode too and are merged in as well. Both modes use the same `agtx-data`
+state volume (declared `external` in the base file), so sandbox state —
+trust store, project databases — carries over between them.
 
 > [!NOTE]
 > Compose mode requires the compose tooling: the Docker Compose plugin

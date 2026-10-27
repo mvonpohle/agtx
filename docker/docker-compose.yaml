@@ -38,4 +38,8 @@ services:
     command: [agtx, /home/sandbox/workspace]
 
 volumes:
+  # external: this is the SAME volume native mode uses (no project-name
+  # prefix, so it is stable across checkouts and modes) and `down` never
+  # removes it. sandbox.sh creates it before `up` if it is missing.
   agtx-data:
+    external: true

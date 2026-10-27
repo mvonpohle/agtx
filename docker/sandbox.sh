@@ -503,6 +503,7 @@ if [ "$PRINT_ONLY" -eq 1 ]; then
         cat "$GEN_OVERRIDE"
         echo "# commands:"
         echo "${CR} compose ${_cf[*]} build"
+        echo "${CR} volume create agtx-data"
         echo "${CR} compose ${_cf[*]} up -d"
         echo "${CR} ps -aq --filter label=com.docker.compose.service=agtx --filter status=running"
         if [ "$(uname -s)" = "Darwin" ]; then
@@ -563,6 +564,11 @@ if [ "$COMPOSE_MODE" -eq 1 ]; then
     # each implementation's own attach support. `down` afterwards removes the
     # container and network but keeps the named 'agtx-data' volume, exactly
     # like native `run --rm` + named volume.
+    # The base file declares agtx-data as external: same volume as native
+    # mode, never removed by `down`. Create it if missing (podman's
+    # 'volume create' errors on an existing volume, so guard it).
+    "$CR" volume create agtx-data 2>/dev/null || true
+
     "${COMPOSE[@]}" "${COMPOSE_FILES[@]}" up -d
 
     CID=""
