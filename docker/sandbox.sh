@@ -2,9 +2,22 @@
 set -e
 
 # agtx sandbox
+#
+# Launches the container defined in compose.yaml (in this directory) via the
+# Compose tool for the available container runtime — docker when present, else
+# podman (override with AGTX_CONTAINER_RUNTIME). The container definition lives
+# in compose.yaml; this script only does what cannot be a compose value:
+#
+#   * pick the runtime (docker / podman),
+#   * select the optional compose.<asset>.yaml fragments that apply (host assets
+#     present, host networking on, Podman rootless),
+#   * plant the macOS Keychain credential (Darwin only) before the agent starts,
+#   * capture the container's exit code and tear the container down.
+#
 # Usage: ./docker/sandbox.sh [path/to/project]  (defaults to current directory)
 
 DOCKER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$DOCKER_DIR"
 
 # Colors
 RED='\033[0;31m'
@@ -28,27 +41,19 @@ CR="${AGTX_CONTAINER_RUNTIME:-docker}"
 command -v "$CR" &>/dev/null || CR=podman
 command -v "$CR" &>/dev/null || error "no container runtime found — install docker or podman"
 
-# Rootless podman remaps UIDs; keep-id preserves host ownership on bind mounts
-USERNS=""; [ "$CR" = "podman" ] && [ "$(id -u)" -ne 0 ] && USERNS="--userns=keep-id"
-
-# `--network host` lets the sandbox reach the host's own services. That is what a
-# locally-hosted model needs (e.g. Ollama on localhost, which a bridge network
-# would hide behind the container's own loopback). Claude needs no such access —
-# it talks to Anthropic's cloud — so this only matters for local-model setups.
-# Podman on macOS cannot set up host networking (crun fails with an OCI
-# permission error), so it is off by default there; AGTX_HOST_NETWORK=1 forces
-# it on and =0 forces it off.
+# Host networking: on by default so the sandbox can reach the host's own services
+# (what a locally-hosted model needs, e.g. Ollama on localhost). Podman on macOS
+# cannot set up host networking (crun fails with an OCI permission error), so it
+# is off by default there; AGTX_HOST_NETWORK=1 forces it on and =0 forces it off.
+# When on, the entrypoint knows via SANDBOX_NET_MODE so it can leave local-model
+# provider configs pointing at localhost.
 NET=""
 case "${AGTX_HOST_NETWORK:-}" in
-    1) NET="--network host" ;;
-    0) NET="" ;;
-    *) [ "$(uname -s)" != "Darwin" ] && NET="--network host" ;;
+    1) NET=host ;;
+    0) NET= ;;
+    *) [ "$(uname -s)" != "Darwin" ] && NET=host ;;
 esac
-
-# The entrypoint needs to know whether the container's localhost reaches the
-# host (host networking) or not (bridge); it uses this to adapt local-model
-# provider configs. See entrypoint.sh.
-export SANDBOX_NET_MODE=$([ -n "$NET" ] && echo host || echo bridge)
+export SANDBOX_NET_MODE="${NET:-bridge}"
 
 RAW_PROJECT="${1:-$(pwd)}"
 
@@ -66,6 +71,8 @@ echo ""
 
 info "Project : $PROJECT"
 info "User    : sandbox (non-root, uid=$(id -u))"
+info "Runtime : $CR (compose)"
+info "Network : $SANDBOX_NET_MODE"
 
 if [ ! -d "$PROJECT/.git" ]; then
     warn "$PROJECT is not a git repository"
@@ -74,48 +81,43 @@ if [ ! -d "$PROJECT/.git" ]; then
     echo ""
 fi
 
+# Expose the host identity to compose: the image build uses the UID/GID, and the
+# base + fragment mounts reference the resolved project and home paths.
+export PROJECT
+export AGTX_BUILD_UID="$(id -u)"
+export AGTX_BUILD_GID="$(id -g)"
+
 # Build image with host UID/GID so files created in the container are owned correctly
 info "Building image..."
-"$CR" build -q \
-    --build-arg UID="$(id -u)" \
-    --build-arg GID="$(id -g)" \
-    -t agtx-sandbox \
-    "$DOCKER_DIR"
-
+"$CR" compose -f compose.yaml build
 success "Image ready"
 echo ""
 
-# `~/.claude.json` carries onboarding state (theme choice, `hasCompletedOnboarding`)
-# and the per-directory trust map — none of which live in `~/.claude`. Without it a
-# fresh sandbox opens on Claude's theme picker and never reaches the prompt. The
-# benchmark has always copied it; the sandbox did not.
-CLAUDE_JSON_MOUNT=""
-if [ -f "${HOME}/.claude.json" ]; then
-    CLAUDE_JSON_MOUNT="-v ${HOME}/.claude.json:/claude-host.json:ro"
-fi
-
-# The agtx-data volume holds the sandbox's state (trust store, project DBs)
-# across runs. Host settings are staged read-only below and copied in at
-# startup, so the volume never sees your host's state files.
-AGTX_CONFIG_MOUNT="-v agtx-data:/home/sandbox/.config/agtx"
-[ -f "${HOME}/.config/agtx/config.toml" ] && AGTX_CONFIG_MOUNT="$AGTX_CONFIG_MOUNT -v ${HOME}/.config/agtx/config.toml:/agtx-host-config.toml:ro"
-[ -d "${HOME}/.config/agtx/plugins" ] && AGTX_CONFIG_MOUNT="$AGTX_CONFIG_MOUNT -v ${HOME}/.config/agtx/plugins:/agtx-host-plugins:ro"
-
-# OpenCode's global config (~/.config/opencode) selects its provider and model.
-# A fresh container has neither and opens on a "no provider" state, so the host's
-# is copied in at startup, the same way ~/.claude is handled above. Copied (not
-# bind-mounted) because OpenCode writes into this directory.
-OPENCODE_CONFIG_MOUNT=""
-if [ -d "${HOME}/.config/opencode" ]; then
-    OPENCODE_CONFIG_MOUNT="-v ${HOME}/.config/opencode:/opencode-host:ro"
-fi
+# Select the fragments that apply. Each host-asset fragment is included only when
+# the asset it mounts exists, so an absent path is never bind-mounted (which would
+# create a root-owned directory on the host).
+F="-f compose.yaml"
+[ -f  "${HOME}/.claude.json" ]            && F="$F -f compose.claude-json.yaml"
+[ -f  "${HOME}/.config/agtx/config.toml" ] && F="$F -f compose.agtx-config.yaml"
+[ -d  "${HOME}/.config/agtx/plugins" ]     && F="$F -f compose.agtx-plugins.yaml"
+[ -d  "${HOME}/.config/opencode" ]        && F="$F -f compose.opencode.yaml"
+# Host networking (base defaults to bridge).
+[ -n "$NET" ]                             && F="$F -f compose.net-host.yaml"
+# Rootless Podman remaps UIDs; keep-id preserves host ownership on bind mounts.
+[ "$CR" = "podman" ] && [ "$(id -u)" -ne 0 ] && F="$F -f compose.keepid.yaml"
 
 # On macOS the Claude OAuth token lives in the Keychain, not in `~/.claude`, so
 # copying that directory leaves the container on "Not logged in · Please run
 # /login". Materialise the same `.credentials.json` Claude Code writes on Linux.
 #
 # The secret is piped through stdin: never written to a host temp file, and never
-# placed in argv where `ps` would expose it. Same approach the benchmark uses.
+# placed in argv where `ps` would expose it. It is planted after the container is
+# up (detached) but before we attach, so no agent starts before it lands.
+#
+# This needs `compose attach`, which Docker Compose has but podman-compose does
+# not — and the Keychain case is Darwin-only, where the runtime is Docker. On
+# Podman (Linux) there is no Keychain credential to plant, so it never reaches
+# this branch.
 CLAUDE_CREDS=""
 if [ "$(uname -s)" = "Darwin" ] && [ ! -f "${HOME}/.claude/.credentials.json" ]; then
     CLAUDE_CREDS="$(security find-generic-password -s 'Claude Code-credentials' -w 2>/dev/null || true)"
@@ -126,31 +128,24 @@ if [ "$(uname -s)" = "Darwin" ] && [ ! -f "${HOME}/.claude/.credentials.json" ];
     fi
 fi
 
-# Started detached so the credential can be planted before any agent launches,
-# then attached so the TUI behaves exactly as before. `--rm` still cleans up on
-# exit, and `attach` returns the container's exit code.
-CID=$("$CR" run -d -it --rm \
-    $USERNS \
-    $NET \
-    --security-opt no-new-privileges:true \
-    --cap-drop ALL \
-    --cap-add CHOWN \
-    --cap-add DAC_OVERRIDE \
-    --cap-add SETUID \
-    --cap-add SETGID \
-    -v "${PROJECT}:/home/sandbox/workspace" \
-    ${AGTX_CONFIG_MOUNT} \
-    -v "${HOME}/.claude:/claude-host:ro" \
-    ${CLAUDE_JSON_MOUNT} \
-    ${OPENCODE_CONFIG_MOUNT} \
-    -w /home/sandbox/workspace \
-    agtx-sandbox \
-    agtx /home/sandbox/workspace)
+# Best-effort: drop any stale container from a previous run (keeps the named
+# volume, so state persists) so the fixed container_name never conflicts.
+"$CR" compose $F down >/dev/null 2>&1 || true
 
-if [ -n "$CLAUDE_CREDS" ]; then
-    printf '%s' "$CLAUDE_CREDS" | "$CR" exec -i "$CID" \
+# Launch and capture the container's exit code. A non-zero code means agtx
+# crashed, so it must not trip `set -e` — capture it explicitly.
+EXIT=0
+if [ -n "$CLAUDE_CREDS" ] && [ "$CR" = "docker" ]; then
+    "$CR" compose $F up -d
+    printf '%s' "$CLAUDE_CREDS" | "$CR" compose $F exec -T sandbox \
         /bin/bash -c 'umask 077 && cat > /home/sandbox/.claude/.credentials.json'
     unset CLAUDE_CREDS
+    "$CR" compose $F attach sandbox || EXIT=$?
+else
+    "$CR" compose $F up || EXIT=$?
+    # podman-compose reports 0 from `up`; recover the real exit code.
+    [ "$CR" = "podman" ] && EXIT=$("$CR" inspect --format '{{.State.ExitCode}}' agtx-sandbox 2>/dev/null || echo "$EXIT")
 fi
 
-exec "$CR" attach "$CID"
+"$CR" compose $F down >/dev/null 2>&1 || true
+exit "$EXIT"

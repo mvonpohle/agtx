@@ -1,0 +1,8 @@
+# Host networking: lets the sandbox reach the host's own services (local models
+# on loopback). The base defaults to bridge; this fragment switches to host.
+# sandbox.sh includes it only when host networking applies (on by default except
+# on macOS; AGTX_HOST_NETWORK=1/0 forces it on/off), and sets SANDBOX_NET_MODE
+# to "host" to match, so the entrypoint can adapt local-model provider configs.
+services:
+  sandbox:
+    network_mode: host
