@@ -1,0 +1,8 @@
+# Optional: the host's OpenCode global config (~/.config/opencode), which selects
+# its provider and model. A fresh container has neither and opens on a "no
+# provider" state, so it is copied in at startup. Guarded so we never bind-mount
+# (and thereby create) a directory that does not exist.
+services:
+  sandbox:
+    volumes:
+      - ${HOME}/.config/opencode:/opencode-host:ro
