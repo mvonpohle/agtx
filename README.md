@@ -874,6 +874,8 @@ The container is defined in `docker/compose.yaml`, with small `docker/compose.<a
 PROJECT=/path/to/project docker compose -f docker/compose.yaml up    # or: podman compose ...
 ```
 
+See **[docker/README.md](docker/README.md)** for both modes (sandbox and runtime), the runtime-mode toggle, and the full set of files.
+
 The sandbox:
 - Mounts only the target project as writable; everything else on the host is inaccessible
 - Copies `~/.claude` credentials read-only at startup so they are never written back to the host
