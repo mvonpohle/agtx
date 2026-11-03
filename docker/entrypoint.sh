@@ -11,6 +11,12 @@ if [ "${AGTX_MODE:-sandbox}" = "runtime" ]; then
 fi
 
 # --- Sandbox mode only: stage a disposable copy and pre-configure it. ---
+#
+# These run as the unprivileged sandbox user (see compose.yaml), which carries
+# DAC_OVERRIDE so it can read the host's own config — typically 700 and owned
+# by the host user — and copy a disposable version into the sandbox home. The
+# staged files are created owned by the sandbox user, so the agent (which runs
+# as the same user) can read and write them.
 
 # Copy host ~/.claude credentials into the writable sandbox home at startup.
 # The host directory is mounted read-only at /claude-host so Claude Code can
