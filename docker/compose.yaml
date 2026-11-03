@@ -37,6 +37,11 @@ services:
     # `<runtime> inspect` (Podman's `compose up` reports 0 regardless). Runtime
     # mode (compose.runtime.yaml) names its container agtx-runtime instead.
     container_name: agtx-sandbox
+    # Runs as the unprivileged sandbox user. It carries DAC_OVERRIDE (see
+    # cap_add) so the entrypoint can read the host's own config — typically
+    # 700 and owned by the host user — and stage a copy into the sandbox home.
+    # The image is built with AGTX_BUILD_UID = the host UID (sandbox.sh), so on
+    # a host with a 700 home the sandbox user is the config's owner anyway.
     user: sandbox
     working_dir: /home/sandbox/workspace
     command: ["agtx", "/home/sandbox/workspace"]

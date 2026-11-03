@@ -44,7 +44,11 @@ RUN userdel -r ubuntu 2>/dev/null || true && \
     useradd -m -u "${UID}" -g "${GID}" -s /bin/bash sandbox
 
 COPY --chown=root:root entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
+# Explicit mode: the container runs as the non-root `sandbox` user, which must
+# be able to *read* the script (shebang) as well as execute it. `chmod +x`
+# would leave a 700 source file unreadable by sandbox (EACCES at exec time);
+# the source mode also varies with the builder's umask.
+RUN chmod 755 /usr/local/bin/entrypoint.sh
 
 # Create agtx dirs so named volume mounts inherit correct ownership.
 # Group-writable, not user-owned: rootless builds can't setuid to huge host UIDs.
