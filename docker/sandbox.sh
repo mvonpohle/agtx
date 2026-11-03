@@ -21,6 +21,7 @@ set -e
 #
 #   * pick the runtime (docker / podman),
 #   * pick the mode (sandbox vs runtime) and its base compose file,
+#   * pick the network mode (sandbox only: host networking on by default),
 #   * select the optional compose.<asset>.yaml fragments whose host assets exist,
 #   * plant the macOS Keychain credential (Darwin only) before the agent starts,
 #   * capture the container's exit code and tear the container down.
@@ -63,6 +64,23 @@ else
     MODE=sandbox; BASE=compose.yaml
 fi
 
+# Sandbox-mode networking: on by default so the sandbox can reach the host's
+# own services (what a locally-hosted model needs, e.g. Ollama on localhost).
+# Podman on macOS cannot set up host networking (crun fails with an OCI
+# permission error), so it is off by default there; AGTX_HOST_NETWORK=1 forces
+# it on and =0 forces it off. When on, the entrypoint knows via SANDBOX_NET_MODE
+# so it can leave local-model provider configs pointing at localhost. Runtime
+# mode always runs on bridge (its base file already mounts the host config).
+NET=""
+if [ "$MODE" = sandbox ]; then
+    case "${AGTX_HOST_NETWORK:-}" in
+        1) NET=host ;;
+        0) NET= ;;
+        *) [ "$(uname -s)" != "Darwin" ] && NET=host ;;
+    esac
+fi
+export SANDBOX_NET_MODE="${NET:-bridge}"
+
 RAW_PROJECT="${1:-$(pwd)}"
 
 if [ ! -d "$RAW_PROJECT" ]; then
@@ -81,6 +99,7 @@ info "Project : $PROJECT"
 info "Mode    : $MODE"
 info "User    : sandbox (non-root, uid=$(id -u))"
 info "Runtime : $CR (compose)"
+[ "$MODE" = sandbox ] && info "Network : $SANDBOX_NET_MODE"
 
 if [ ! -d "$PROJECT/.git" ]; then
     warn "$PROJECT is not a git repository"
@@ -114,6 +133,9 @@ else
     [ -f  "${HOME}/.claude.json" ]            && F="$F -f compose.claude-json.yaml"
     [ -f  "${HOME}/.config/agtx/config.toml" ] && F="$F -f compose.agtx-config.yaml"
     [ -d  "${HOME}/.config/agtx/plugins" ]     && F="$F -f compose.agtx-plugins.yaml"
+    [ -d  "${HOME}/.config/opencode" ]        && F="$F -f compose.opencode.yaml"
+    # Host networking (base defaults to bridge).
+    [ -n "$NET" ]                             && F="$F -f compose.net-host.yaml"
 fi
 # Rootless Podman remaps UIDs; keep-id preserves host ownership on bind mounts.
 [ "$CR" = "podman" ] && [ "$(id -u)" -ne 0 ] && F="$F -f compose.keepid.yaml"
