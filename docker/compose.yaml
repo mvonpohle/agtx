@@ -4,16 +4,24 @@
 # with sandbox.sh (which selects the optional fragments below and handles the
 # runtime), or directly:
 #
-#   PROJECT=/path/to/project <runtime> compose -f compose.yaml [-f <fragment> ...] up
+#   PROJECT=/path/to/project SANDBOX_NET_MODE=bridge <runtime> compose \
+#       -f compose.yaml [-f <fragment> ...] up
 #
 # The base file carries everything that is always the same. The conditional
-# host-asset mounts (which must exist on the host) and the Podman-only user
-# namespace tweak live in the compose.<asset>.yaml fragments alongside it —
-# compose concatenates their volumes onto the base, so a fragment only ever
-# adds its mount and never re-lists the base ones. sandbox.sh includes each
-# fragment only when the asset it mounts is actually present, so we never
-# bind-mount a host path that does not exist (which would create a root-owned
-# directory on the host).
+# host-asset mounts (which must exist on the host), the host-networking mode,
+# and the Podman-only user namespace tweak live in the compose.<asset>.yaml
+# fragments alongside it — compose concatenates their volumes (and applies
+# their scalar settings) onto the base, so a fragment only ever adds what it
+# declares and never re-lists the base ones. sandbox.sh includes each fragment
+# only when it applies, so we never bind-mount a host path that does not exist
+# (which would create a root-owned directory on the host).
+#
+# Networking: bridge by default (the Compose default, so omitted here). The
+# compose.net-host.yaml fragment switches it to `host` so the sandbox can reach
+# the host's own services — what a locally-hosted model needs (e.g. Ollama on
+# localhost, which a bridge network would hide behind the container's own
+# loopback). The SANDBOX_NET_MODE env var tells the entrypoint which mode is
+# active so it can adapt local-model provider configs (see entrypoint.sh).
 
 services:
   sandbox:
@@ -40,6 +48,9 @@ services:
       # (trust, settings, auto_trust). compose.runtime.yaml sets AGTX_MODE=runtime
       # so the entrypoint leaves the host's real config untouched instead.
       - AGTX_MODE=sandbox
+      # host or bridge; the entrypoint uses this to adapt local-model configs.
+      # sandbox.sh sets it to match the network_mode it selects.
+      - SANDBOX_NET_MODE=${SANDBOX_NET_MODE:-bridge}
     # Least privilege, matching the previous `docker run` flags.
     cap_drop: [ALL]
     cap_add: [CHOWN, DAC_OVERRIDE, SETUID, SETGID]
