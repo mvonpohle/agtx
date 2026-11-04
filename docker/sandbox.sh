@@ -31,6 +31,9 @@ set -e
 #   AGTX_RUNTIME=1 ./docker/sandbox.sh [path/to/project]   # runtime mode
 #   (defaults to current directory)
 
+# Remember where the script was invoked: the project argument (and the default
+# when none is given) is relative to the caller, not to this script's directory.
+CALLER_PWD="$(pwd)"
 DOCKER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DOCKER_DIR"
 
@@ -81,7 +84,14 @@ if [ "$MODE" = sandbox ]; then
 fi
 export SANDBOX_NET_MODE="${NET:-bridge}"
 
-RAW_PROJECT="${1:-$(pwd)}"
+RAW_PROJECT="${1:-$CALLER_PWD}"
+
+# We are already in docker/ for compose, so resolve a relative project path
+# against the directory the caller invoked us from.
+case "$RAW_PROJECT" in
+    /*) ;;
+    *)  RAW_PROJECT="$CALLER_PWD/$RAW_PROJECT" ;;
+esac
 
 if [ ! -d "$RAW_PROJECT" ]; then
     error "Directory not found: $RAW_PROJECT"
