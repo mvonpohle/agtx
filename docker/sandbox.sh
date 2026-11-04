@@ -128,9 +128,11 @@ PROJECT_NAME="$(basename "$PROJECT")"
 # Both modes bind-mount host config paths. Pre-create any that do not exist, as
 # the host user, so the container runtime never auto-creates them root-owned.
 # Idempotent: an existing file/directory is left untouched, and an empty one
-# stages as a no-op at startup (see entrypoint.sh).
+# stages as a no-op at startup (see entrypoint.sh). The JSON file is seeded with
+# a valid empty object (not a zero-byte file) so a host-side reader never sees
+# invalid JSON.
 mkdir -p "${HOME}/.config/agtx/plugins" "${HOME}/.config/opencode" "${HOME}/.claude"
-[ -f "${HOME}/.claude.json" ]             || touch "${HOME}/.claude.json"
+[ -f "${HOME}/.claude.json" ]             || printf '{}\n' > "${HOME}/.claude.json"
 [ -f "${HOME}/.config/agtx/config.toml" ] || touch "${HOME}/.config/agtx/config.toml"
 
 echo ""

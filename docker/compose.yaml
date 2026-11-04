@@ -92,7 +92,9 @@ services:
       # Your OpenCode global config (provider + model selection).
       - ${HOME}/.config/opencode:/opencode-host:ro
     # --- Optional settings (off by default). ---
-    # Expose a container port on the host (none are needed for the TUI):
+    # Expose a container port on the host (none are needed for the TUI). Note
+    # this cannot be combined with network_mode: host, which is the Linux
+    # default — Docker rejects `ports` on a host-networked service:
     #   ports:
     #     - "3000:3000"
     # Set a restart policy:
