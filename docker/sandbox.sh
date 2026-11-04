@@ -59,9 +59,9 @@ command -v "$CR" &>/dev/null || error "no container runtime found — install do
 # Mode + the base compose file it uses. AGTX_RUNTIME=1 selects runtime mode
 # (host config/state mounted writable); anything else is sandbox mode (default).
 if [ "${AGTX_RUNTIME:-0}" = "1" ]; then
-    MODE=runtime; BASE=compose.runtime.yaml
+    MODE=runtime; BASE=compose.runtime.yaml; CONTAINER=agtx-runtime
 else
-    MODE=sandbox; BASE=compose.yaml
+    MODE=sandbox; BASE=compose.yaml; CONTAINER=agtx-sandbox
 fi
 
 # Sandbox-mode networking: on by default so the sandbox can reach the host's
@@ -179,7 +179,7 @@ if [ -n "$CLAUDE_CREDS" ] && [ "$CR" = "docker" ]; then
 else
     "$CR" compose $F up || EXIT=$?
     # podman-compose reports 0 from `up`; recover the real exit code.
-    [ "$CR" = "podman" ] && EXIT=$("$CR" inspect --format '{{.State.ExitCode}}' agtx-sandbox 2>/dev/null || echo "$EXIT")
+    [ "$CR" = "podman" ] && EXIT=$("$CR" inspect --format '{{.State.ExitCode}}' "$CONTAINER" 2>/dev/null || echo "$EXIT")
 fi
 
 "$CR" compose $F down >/dev/null 2>&1 || true
