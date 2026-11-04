@@ -44,9 +44,19 @@ AGTX_RUNTIME=1 ./docker/sandbox.sh path/to/your-project
 ## Details
 
 - **Runtime:** docker when installed, else podman. Set `AGTX_CONTAINER_RUNTIME=docker|podman` to force one. The image builds on first run, then is cached.
-- **Launch a definition directly** (skip `sandbox.sh`):
+- **Launch a definition directly** (skip `sandbox.sh`). Start detached and then
+  attach: `compose up` forwards logs but not keyboard input, so a plain `up`
+  leaves the TUI without stdin.
   ```bash
-  PROJECT=/path/to/project docker compose -f docker/compose.yaml up            # sandbox
-  PROJECT=/path/to/project docker compose -f docker/compose.runtime.yaml up    # runtime
+  # sandbox
+  PROJECT=/path/to/project docker compose -f docker/compose.yaml up -d
+  PROJECT=/path/to/project docker compose -f docker/compose.yaml attach sandbox
+
+  # runtime
+  PROJECT=/path/to/project docker compose -f docker/compose.runtime.yaml up -d
+  PROJECT=/path/to/project docker compose -f docker/compose.runtime.yaml attach sandbox
+
+  # tear down afterwards
+  PROJECT=/path/to/project docker compose -f docker/compose.yaml down
   ```
 - **Files:** `compose.yaml` (sandbox) + `compose.<asset>.yaml` fragments (optional host-asset mounts, host networking, Podman `keep-id`); `compose.runtime.yaml` (runtime); `sandbox.sh` (launcher); `entrypoint.sh` (startup config); `Dockerfile`.

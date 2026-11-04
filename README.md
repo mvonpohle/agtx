@@ -868,10 +868,11 @@ Run agtx in an isolated container (Docker or Podman, including rootless Podman) 
 ./docker/sandbox.sh
 ```
 
-The container is defined in `docker/compose.yaml`, with small `docker/compose.<asset>.yaml` fragments for the optional host-asset mounts and the Podman-only user namespace. `sandbox.sh` is a thin wrapper that picks the runtime and selects whichever fragments apply; for a quick run you can also launch the base directly:
+The container is defined in `docker/compose.yaml`, with small `docker/compose.<asset>.yaml` fragments for the optional host-asset mounts and the Podman-only user namespace. `sandbox.sh` is a thin wrapper that picks the runtime and selects whichever fragments apply; for a quick run you can also launch the base directly. Start detached and then attach — `compose up` forwards logs but not keyboard input, so the TUI needs the attach:
 
 ```bash
-PROJECT=/path/to/project docker compose -f docker/compose.yaml up    # or: podman compose ...
+PROJECT=/path/to/project docker compose -f docker/compose.yaml up -d
+PROJECT=/path/to/project docker compose -f docker/compose.yaml attach sandbox
 ```
 
 See **[docker/README.md](docker/README.md)** for both modes (sandbox and runtime), the runtime-mode toggle, and the full set of files.
@@ -896,7 +897,8 @@ By default the container is a sandbox: agtx's state is isolated in a named volum
 AGTX_RUNTIME=1 ./docker/sandbox.sh path/to/your-project
 
 # Or launch the runtime definition directly
-PROJECT=/path/to/project docker compose -f docker/compose.runtime.yaml up
+PROJECT=/path/to/project docker compose -f docker/compose.runtime.yaml up -d
+PROJECT=/path/to/project docker compose -f docker/compose.runtime.yaml attach sandbox
 ```
 
 Runtime mode mounts your real `~/.config/agtx`, `~/.claude`, and `~/.claude.json` **writable** at their normal locations (instead of a named volume + read-only copies), so agtx persists to the host exactly as a local install would. It is still a container with the same least-privilege caps — it is another way to run agtx, not a jail.
