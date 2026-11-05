@@ -2,7 +2,10 @@
 
 Run agtx in a container (Docker or Podman, including rootless Podman). One
 launcher — `sandbox.sh` — with two modes, and the container itself defined in
-`compose.yaml` / `compose.runtime.yaml`.
+two self-contained files: `compose.yaml` (sandbox) and `compose.runtime.yaml`
+(runtime). Each carries reasonable defaults with commented-out optional
+settings; to make your own tweaks, copy one to the gitignored
+`compose.custom.yaml` (see [Customize](#customize)).
 
 > All commands below assume you are in the repository root.
 
@@ -51,6 +54,29 @@ The container is named `agtx-runtime` in this mode (sandbox mode uses
 `agtx-sandbox`), so `docker inspect` / `podman inspect` and `stop` address the
 right one.
 
+## Customize
+
+Both definitions ship with reasonable defaults and commented-out optional
+settings (ports, restart policy, image override, extra env). To make your own
+tweaks that survive repo updates and never pollute the repo:
+
+1. Copy the definition you use to `docker/compose.custom.yaml` (already
+   gitignored):
+   ```bash
+   cp docker/compose.yaml docker/compose.custom.yaml        # sandbox
+   # or: cp docker/compose.runtime.yaml docker/compose.custom.yaml   # runtime
+   ```
+2. Edit `docker/compose.custom.yaml` freely.
+3. Run `./docker/sandbox.sh` as usual — it uses `compose.custom.yaml` when
+   present and reads its mode (`AGTX_MODE`) and container name from it.
+
+Delete `docker/compose.custom.yaml` to go back to the defaults.
+
+> Note: `sandbox.sh` pre-creates the host config paths it mounts (e.g.
+> `~/.claude`, `~/.config/agtx`, `~/.config/opencode`) as *your host user* if
+> they do not exist yet, so a bind mount never auto-creates a root-owned
+> directory. An empty one simply stages as a no-op at startup.
+
 ## Details
 
 - **Runtime:** docker when installed, else podman. Set `AGTX_CONTAINER_RUNTIME=docker|podman` to force one. The image builds on first run, then is cached.
@@ -69,4 +95,4 @@ right one.
   # tear down afterwards
   PROJECT=/path/to/project docker compose -f docker/compose.yaml down
   ```
-- **Files:** `compose.yaml` (sandbox) + `compose.<asset>.yaml` fragments (optional host-asset mounts, host networking, Podman `keep-id`); `compose.runtime.yaml` (runtime); `sandbox.sh` (launcher); `entrypoint.sh` (startup config); `Dockerfile`.
+- **Files:** `compose.yaml` (sandbox) and `compose.runtime.yaml` (runtime), each self-contained with reasonable defaults + commented optional settings; `compose.keepid.yaml` (rootless-Podman-only `userns_mode: keep-id`, added automatically); `compose.custom.yaml` (optional, gitignored — your edited copy of a default); `sandbox.sh` (launcher); `entrypoint.sh` (startup config); `Dockerfile`.

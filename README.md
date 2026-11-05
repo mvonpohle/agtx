@@ -868,7 +868,7 @@ Run agtx in an isolated container (Docker or Podman, including rootless Podman) 
 ./docker/sandbox.sh
 ```
 
-The container is defined in `docker/compose.yaml`, with small `docker/compose.<asset>.yaml` fragments for the optional host-asset mounts and the Podman-only user namespace. `sandbox.sh` is a thin wrapper that picks the runtime and selects whichever fragments apply; for a quick run you can also launch the base directly. Start detached and then attach — `compose up` forwards logs but not keyboard input, so the TUI needs the attach:
+The container is defined in two self-contained files — `docker/compose.yaml` (sandbox) and `docker/compose.runtime.yaml` (runtime) — each with reasonable defaults and commented-out optional settings; the only fragment is `docker/compose.keepid.yaml` (rootless-Podman-only `userns_mode: keep-id`). `sandbox.sh` is a thin wrapper that picks the runtime, pre-creates the host paths it mounts, and attaches your terminal; for a quick run you can also launch a definition directly. To customize, copy a default to the gitignored `docker/compose.custom.yaml` and edit it (see **[docker/README.md](docker/README.md)**). Start detached and then attach — `compose up` forwards logs but not keyboard input, so the TUI needs the attach:
 
 ```bash
 PROJECT=/path/to/project docker compose -f docker/compose.yaml up -d

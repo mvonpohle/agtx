@@ -17,6 +17,9 @@ Thumbs.db
 # Local agtx data (per-project)
 .agtx/
 
+# User-local compose customization (a copy of a default, edited freely)
+docker/compose.custom.yaml
+
 # Logs
 *.log
 

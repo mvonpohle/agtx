@@ -16,13 +16,20 @@ set -e
 #                    updates straight to the host. The in-container equivalent of
 #                    installing agtx: another way to run it, not a jail.
 #
+# Customize: copy compose.yaml (or compose.runtime.yaml) to compose.custom.yaml
+# (gitignored) and edit it. When present, that file is used instead and it is
+# self-describing — its AGTX_MODE and container_name drive the rest of the
+# launcher. The base files already carry every mount and the network mode, so
+# there is no per-asset fragment selection; the only fragment is
+# compose.keepid.yaml (rootless Podman only).
+#
 # The container definition lives in the compose file; this script only does what
 # cannot be a compose value:
 #
 #   * pick the runtime (docker / podman),
 #   * pick the mode (sandbox vs runtime) and its base compose file,
+#   * pre-create the host asset paths it mounts (so none are created root-owned),
 #   * pick the network mode (sandbox only: host networking on by default),
-#   * select the optional compose.<asset>.yaml fragments whose host assets exist,
 #   * plant the macOS Keychain credential (Darwin only) before the agent starts,
 #   * attach the caller's terminal — compose `up` attaches logs, not stdin,
 #   * capture the container's exit code and tear the container down.
@@ -60,13 +67,28 @@ CR="${AGTX_CONTAINER_RUNTIME:-docker}"
 command -v "$CR" &>/dev/null || CR=podman
 command -v "$CR" &>/dev/null || error "no container runtime found — install docker or podman"
 
-# Mode + the base compose file it uses. AGTX_RUNTIME=1 selects runtime mode
+# Mode + the base compose file it uses. A user-local custom definition
+# (compose.custom.yaml, gitignored) is a full copy of one of the defaults that
+# the user has edited; when present it wins, and it is self-describing (its
+# AGTX_MODE drives the mode). Otherwise AGTX_RUNTIME=1 selects runtime mode
 # (host config/state mounted writable); anything else is sandbox mode (default).
-if [ "${AGTX_RUNTIME:-0}" = "1" ]; then
-    MODE=runtime; BASE=compose.runtime.yaml; CONTAINER=agtx-runtime
+if [ -f "compose.custom.yaml" ]; then
+    BASE=compose.custom.yaml
+    # Match the real env-list item, not a comment mentioning AGTX_MODE=runtime.
+    if grep -Eq '^[[:space:]]*-[[:space:]]*AGTX_MODE=runtime' "compose.custom.yaml"; then
+        MODE=runtime
+    else
+        MODE=sandbox
+    fi
+elif [ "${AGTX_RUNTIME:-0}" = "1" ]; then
+    MODE=runtime; BASE=compose.runtime.yaml
 else
-    MODE=sandbox; BASE=compose.yaml; CONTAINER=agtx-sandbox
+    MODE=sandbox; BASE=compose.yaml
 fi
+# Container name for attach/inspect/exec: read it from the base file, falling
+# back to the mode convention (agtx-sandbox / agtx-runtime).
+CN="$(grep -Eo '^[[:space:]]*container_name:[[:space:]]*[^[:space:]]+' "$BASE" | head -n1 | awk '{print $2}')"
+CONTAINER="${CN:-$([ "$MODE" = runtime ] && echo agtx-runtime || echo agtx-sandbox)}"
 
 # Networking: host by default so the container can reach the host's own
 # services (what a locally-hosted model needs, e.g. Ollama on localhost).
@@ -103,13 +125,15 @@ PROJECT="$(resolve_path "$RAW_PROJECT")"
 # the real project name (and a path-keyed DB) instead of the generic "workspace".
 PROJECT_NAME="$(basename "$PROJECT")"
 
-# Runtime mode bind-mounts the host's config directories directly (see
-# compose.runtime.yaml). Create them as the host user first so an absent path is
-# never created root-owned by the container runtime. Sandbox mode selects its
-# fragments conditionally instead, so it needs no such guard.
-if [ "$MODE" = runtime ]; then
-    mkdir -p "${HOME}/.config/opencode"
-fi
+# Both modes bind-mount host config paths. Pre-create any that do not exist, as
+# the host user, so the container runtime never auto-creates them root-owned.
+# Idempotent: an existing file/directory is left untouched, and an empty one
+# stages as a no-op at startup (see entrypoint.sh). The JSON file is seeded with
+# a valid empty object (not a zero-byte file) so a host-side reader never sees
+# invalid JSON.
+mkdir -p "${HOME}/.config/agtx/plugins" "${HOME}/.config/opencode" "${HOME}/.claude"
+[ -f "${HOME}/.claude.json" ]             || printf '{}\n' > "${HOME}/.claude.json"
+[ -f "${HOME}/.config/agtx/config.toml" ] || touch "${HOME}/.config/agtx/config.toml"
 
 echo ""
 echo "  ╭──────────────────────────────────────────╮"
@@ -132,7 +156,7 @@ if [ ! -d "$PROJECT/.git" ]; then
 fi
 
 # Expose the host identity to compose: the image build uses the UID/GID, and the
-# base + fragment mounts reference the resolved project and home paths.
+# base file's mounts reference the resolved project and home paths.
 export PROJECT
 export PROJECT_NAME
 export AGTX_BUILD_UID="$(id -u)"
@@ -144,27 +168,11 @@ info "Building image..."
 success "Image ready"
 echo ""
 
-# Select the base file and the fragments that apply.
-#   sandbox : the host-asset fragments, each included only when the asset it
-#             mounts exists, so an absent path is never bind-mounted (which
-#             would create a root-owned directory on the host).
-#   runtime : your real config/state are already mounted writable in the base
-#             file, so there are no staging assets to select.
-if [ "$MODE" = runtime ]; then
-    F="-f compose.runtime.yaml"
-    # Host networking (base defaults to bridge) — the model is a network
-    # service on the host's loopback, so runtime mode needs it too.
-    [ -n "$NET" ]                             && F="$F -f compose.net-host.yaml"
-else
-    F="-f compose.yaml"
-    [ -f  "${HOME}/.claude.json" ]            && F="$F -f compose.claude-json.yaml"
-    [ -f  "${HOME}/.config/agtx/config.toml" ] && F="$F -f compose.agtx-config.yaml"
-    [ -d  "${HOME}/.config/agtx/plugins" ]     && F="$F -f compose.agtx-plugins.yaml"
-    [ -d  "${HOME}/.config/opencode" ]        && F="$F -f compose.opencode.yaml"
-    # Host networking (base defaults to bridge).
-    [ -n "$NET" ]                             && F="$F -f compose.net-host.yaml"
-fi
-# Rootless Podman remaps UIDs; keep-id preserves host ownership on bind mounts.
+# The base file already carries every mount and the network mode, so there is no
+# per-asset fragment selection (the host paths are pre-created above instead).
+# The only fragment is keep-id, which applies only to rootless Podman (Docker
+# does not use userns_mode).
+F="-f $BASE"
 [ "$CR" = "podman" ] && [ "$(id -u)" -ne 0 ] && F="$F -f compose.keepid.yaml"
 
 # On macOS the Claude OAuth token lives in the Keychain, not in `~/.claude`, so
