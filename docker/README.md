@@ -95,4 +95,11 @@ Delete `docker/compose.custom.yaml` to go back to the defaults.
   # tear down afterwards
   PROJECT=/path/to/project docker compose -f docker/compose.yaml down
   ```
+
+  > A foreground `up` is not enough for the TUI: compose's foreground mode
+  > tails the container's logs but never attaches stdin, so agtx runs without
+  > a keyboard. That is why the examples detach first and then attach. With
+  > Podman the attach step is the runtime-native command, because
+  > `podman-compose` has no `attach` subcommand:
+  > `podman attach agtx-runtime` (or `agtx-sandbox`).
 - **Files:** `compose.yaml` (sandbox) and `compose.runtime.yaml` (runtime), each self-contained with reasonable defaults + commented optional settings; `compose.keepid.yaml` (rootless-Podman-only `user: "0"` override, added automatically); `compose.custom.yaml` (optional, gitignored — your edited copy of a default); `sandbox.sh` (launcher); `entrypoint.sh` (startup config); `Dockerfile`.
