@@ -71,7 +71,9 @@ services:
       - no-new-privileges:true
     volumes:
       # The project, writable — the only host path the agent can touch.
-      - ${PROJECT}:/home/sandbox/workspace
+      # Quoted so the ": " inside the error message does not make YAML parse
+      # the line as a mapping instead of a string.
+      - "${PROJECT:?required: set PROJECT to the project directory, or use ./docker/sandbox.sh (it defaults to your cwd and derives PROJECT_NAME)}:/home/sandbox/workspace"
       # agtx state (trust store, project DBs) persists here across runs; host
       # settings are staged read-only below and copied in at startup, so this
       # volume never sees the host's state files.

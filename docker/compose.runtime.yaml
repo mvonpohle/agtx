@@ -66,7 +66,9 @@ services:
       # The project, writable — the path agtx works on. Mounted under its own
       # name so the board shows the real project and each project gets its own
       # path-keyed database.
-      - ${PROJECT}:/home/sandbox/workspaces/${PROJECT_NAME:-workspace}
+      # Quoted so the ": " inside the error message does not make YAML parse
+      # the line as a mapping instead of a string.
+      - "${PROJECT:?required: set PROJECT to the project directory, or use ./docker/sandbox.sh (it defaults to your cwd and derives PROJECT_NAME)}:/home/sandbox/workspaces/${PROJECT_NAME:-workspace}"
       # Your real agtx config AND state, WRITABLE, at the normal location. This
       # is what "writes config/status/updates back to the host" means: config.toml,
       # plugins/, the trust store, and the project databases all live here.
