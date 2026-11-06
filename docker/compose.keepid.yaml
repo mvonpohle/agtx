@@ -1,6 +1,14 @@
-# Podman-only: rootless Podman remaps UIDs, so keep-id preserves host ownership
-# on the bind mounts. Docker does not need (or, pre-25, accept) this, so it is
-# added as a fragment and included only when running rootless Podman.
+# Rootless-Podman-only override (sandbox.sh adds this automatically; include it
+# manually when driving `podman compose` directly).
+#
+# Rootless Podman maps container uid 0 to the invoking host user, so running
+# as 0 gives correct ownership of bind-mounted host files AND access to 700
+# host directories — including on NFS/remote-fs hosts (e.g. HPC homes), where
+# DAC_OVERRIDE cannot reach the server-side permission check and the
+# sandbox-uid + DAC_OVERRIDE design fails with EACCES.
+#
+# `user` must stay quoted: podman-compose 1.5.0 refuses to merge an unquoted
+# YAML int against the base file's string ("can't merge value of [user]").
 services:
   sandbox:
-    userns_mode: keep-id
+    user: "0"

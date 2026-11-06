@@ -170,8 +170,9 @@ echo ""
 
 # The base file already carries every mount and the network mode, so there is no
 # per-asset fragment selection (the host paths are pre-created above instead).
-# The only fragment is keep-id, which applies only to rootless Podman (Docker
-# does not use userns_mode).
+# The only fragment is the rootless-Podman user override (compose.keepid.yaml,
+# runs the container as uid 0, which rootless Podman maps to the invoking host
+# user); Docker keeps the base files' user: sandbox.
 F="-f $BASE"
 [ "$CR" = "podman" ] && [ "$(id -u)" -ne 0 ] && F="$F -f compose.keepid.yaml"
 
