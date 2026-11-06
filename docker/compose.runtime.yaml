@@ -57,6 +57,11 @@ services:
       # Tells the entrypoint to leave your real config untouched and let agtx
       # and Claude behave like a normal local run (no sandbox pre-configuration).
       - AGTX_MODE=runtime
+      # The container's home is /home/sandbox (WORKDIR and every mount). As uid 0
+      # (rootless Podman, via compose.keepid.yaml) the runtime would set HOME=/root,
+      # sending agtx's config to /root/.config/agtx (the overlay) instead of the
+      # mounted host config. Pin it to the real home so it holds for any uid.
+      - HOME=/home/sandbox
     # Same least-privilege caps as the sandbox — it is still a container.
     cap_drop: [ALL]
     cap_add: [CHOWN, DAC_OVERRIDE, SETUID, SETGID]

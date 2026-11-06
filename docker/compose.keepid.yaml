@@ -9,6 +9,10 @@
 #
 # `user` must stay quoted: podman-compose 1.5.0 refuses to merge an unquoted
 # YAML int against the base file's string ("can't merge value of [user]").
+#
+# Running as uid 0 also makes the runtime set HOME=/root, which would send
+# agtx's config to the overlay (/root/.config/agtx) instead of the mounted
+# host config. The base files pin HOME=/home/sandbox to compensate.
 services:
   sandbox:
     user: "0"

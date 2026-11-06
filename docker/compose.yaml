@@ -64,6 +64,11 @@ services:
       # host or bridge; the entrypoint uses this to adapt local-model configs.
       # sandbox.sh sets it to match the network_mode it selects.
       - SANDBOX_NET_MODE=${SANDBOX_NET_MODE:-bridge}
+      # The container's home is /home/sandbox (WORKDIR and every mount). As uid 0
+      # (rootless Podman, via compose.keepid.yaml) the runtime would set HOME=/root,
+      # sending agtx's config to /root/.config/agtx instead of the staged config.
+      # Pin it to the real home so it holds for any uid.
+      - HOME=/home/sandbox
     # Least privilege, matching the previous `docker run` flags.
     cap_drop: [ALL]
     cap_add: [CHOWN, DAC_OVERRIDE, SETUID, SETGID]
