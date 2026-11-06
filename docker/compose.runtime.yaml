@@ -1,32 +1,16 @@
 # agtx runtime mode — the container as agtx's runtime, not a sandbox.
+# Opposite of the sandbox's isolation: the host's real config and state
+# (agtx, Claude, OpenCode) are mounted WRITABLE at their normal locations, so
+# agtx writes config/status/updates straight to the host. It's the in-container
+# equivalent of installing agtx — another way to run it, not a jail. Still a
+# container with the same least-privilege caps.
 #
-# The sandbox (compose.yaml) isolates agtx's state in a named volume and stages
-# your host settings read-only, so nothing the agent does can reach the host.
-# Runtime mode is the opposite of that isolation: it mounts your host's real
-# config and state — agtx, Claude, and OpenCode — WRITABLE at their normal
-# locations, so agtx writes its config, status, and updates straight to the
-# host. It is the in-container equivalent of installing agtx on the host —
-# another way to run agtx, not a jail. It is still a container with the same
-# least-privilege caps.
+# Customize: copy to compose.custom.yaml (gitignored) and edit it.
 #
-# sandbox.sh pre-creates any of the host paths mounted below that do not yet
-# exist (as your host user), so a bind mount never auto-creates a root-owned
-# directory on the host.
-#
-# Customize: copy this file to compose.custom.yaml (gitignored) and edit it —
-# sandbox.sh uses that file when present and reads its mode and container name
-# from it.
-#
-# The project is mounted at /home/sandbox/workspaces/$PROJECT_NAME so agtx
-# derives the real project name for the board instead of the generic sandbox
-# name "workspace". A dedicated parent keeps the name from colliding with the
-# container home's own entries (.config, .claude, ...).
-#
+# Launch directly:
 #   PROJECT=/path/to/project PROJECT_NAME=$(basename /path/to/project) \
 #       docker compose -f compose.runtime.yaml up
-#
-# or via the launcher (AGTX_RUNTIME=1 selects this file):
-#
+# or via the launcher:
 #   AGTX_RUNTIME=1 ./docker/sandbox.sh path/to/your-project
 
 services:
@@ -38,53 +22,40 @@ services:
         # Host UID/GID so bind-mounted files come out owned by the host user.
         UID: ${AGTX_BUILD_UID:-1000}
         GID: ${AGTX_BUILD_GID:-1000}
-    # Fixed name: lets sandbox.sh read the container's exit code via
-    # `<runtime> inspect` (Podman's `compose up` reports 0 regardless). Runtime
-    # mode is not a jail, so it gets its own name to tell its container apart
-    # from the sandbox (compose.yaml) when both are on the host.
+    # Fixed name (distinct from the sandbox) so inspect/stop address the right one.
     container_name: agtx-runtime
     user: sandbox
-    # Mounted under the project's own directory name, not the sandbox's generic
-    # "workspace": agtx derives the project name (and its path-keyed project DB)
-    # from this basename, so the board reflects the real project. PROJECT_NAME is
-    # exported by sandbox.sh; the fallback covers a direct compose launch.
+    # Mounted under the project's own name so agtx derives the real project
+    # name (and path-keyed DB) instead of the generic "workspace".
     working_dir: /home/sandbox/workspaces/${PROJECT_NAME:-workspace}
     command: ["agtx", "/home/sandbox/workspaces/${PROJECT_NAME:-workspace}"]
-    # TUI: needs a live TTY and stdin.
+    # TUI needs a live TTY and stdin
     stdin_open: true
     tty: true
     environment:
-      # Tells the entrypoint to leave your real config untouched and let agtx
-      # and Claude behave like a normal local run (no sandbox pre-configuration).
+      # entrypoint leaves the host's real config untouched (no sandbox staging)
       - AGTX_MODE=runtime
-    # Same least-privilege caps as the sandbox — it is still a container.
+    # Same least-privilege caps as the sandbox
     cap_drop: [ALL]
     cap_add: [CHOWN, DAC_OVERRIDE, SETUID, SETGID]
     security_opt:
       - no-new-privileges:true
     volumes:
-      # The project, writable — the path agtx works on. Mounted under its own
-      # name so the board shows the real project and each project gets its own
-      # path-keyed database.
+      # The project, writable; mounted under its own name so the board shows the
+      # real project and each gets its own path-keyed database
       - ${PROJECT}:/home/sandbox/workspaces/${PROJECT_NAME:-workspace}
-      # Your real agtx config AND state, WRITABLE, at the normal location. This
-      # is what "writes config/status/updates back to the host" means: config.toml,
-      # plugins/, the trust store, and the project databases all live here.
+      # Real agtx config AND state, WRITABLE (config.toml, plugins/, trust store,
+      # project DBs) — this is what "writes back to the host" means
       - ${HOME}/.config/agtx:/home/sandbox/.config/agtx
-      # Your real OpenCode global config (provider + model selection), WRITABLE,
-      # at the normal location. Without this OpenCode starts with a fresh empty
-      # config and opens on a "no provider" state.
+      # Real OpenCode config, WRITABLE (provider + model selection)
       - ${HOME}/.config/opencode:/home/sandbox/.config/opencode
-      # Your real Claude config and credentials, WRITABLE, at the normal location.
+      # Real Claude config/credentials, WRITABLE
       - ${HOME}/.claude:/home/sandbox/.claude
-      # Your real Claude onboarding/trust file, WRITABLE.
+      # Real Claude onboarding/trust file, WRITABLE
       - ${HOME}/.claude.json:/home/sandbox/.claude.json
-    # --- Optional settings (off by default). ---
-    # Expose a container port on the host (none are needed for the TUI):
+    # Optional (off by default):
     #   ports:
     #     - "3000:3000"
-    # Set a restart policy:
     #   restart: unless-stopped
-    # To use a prebuilt image instead of the local Dockerfile, change the
-    # image: value above (and drop the build: block).
-    # To add an environment variable, append it to the environment: list above.
+    # Prebuilt image instead of the local build: change image:, drop build:.
+    # Extra env: append to the environment: list.

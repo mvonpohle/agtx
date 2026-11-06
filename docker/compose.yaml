@@ -1,31 +1,13 @@
-# agtx sandbox — the container definition.
-#
-# This file is the single readable source of truth for the sandbox container.
-# Launch it with sandbox.sh (which picks the runtime, pre-creates the host
-# asset paths it mounts, and attaches your terminal), or directly:
-#
+# agtx sandbox — the container definition. Launch with sandbox.sh, or directly:
 #   PROJECT=/path/to/project <runtime> compose -f compose.yaml up
 #
-# Everything that is always the same lives here: the image, the least-privilege
-# caps, the writable project workspace, the isolated agtx state volume, and the
-# read-only staging of your host's agent settings. Those staged assets (Claude,
-# the agtx config/plugins, and the OpenCode provider selection) are mounted
-# read-only and copied into the writable sandbox home at startup by
-# entrypoint.sh — so the sandbox uses your configuration without ever writing
-# back to the host. sandbox.sh pre-creates any of those host paths that do not
-# yet exist (as your host user) so a bind mount never auto-creates a root-owned
-# directory on the host.
+# State is isolated in a named volume; host agent settings are staged read-only
+# and copied in at startup by entrypoint.sh (never written back to the host).
+# Networking is bridge by default; sandbox.sh sets SANDBOX_NET_MODE=host on
+# Linux so the sandbox can reach a locally-hosted model (e.g. Ollama).
 #
-# Networking defaults to bridge. sandbox.sh sets SANDBOX_NET_MODE=host on Linux
-# so the sandbox can reach a locally-hosted model (e.g. Ollama on localhost,
-# which a bridge network would hide behind the container's own loopback); on
-# macOS it stays bridge and entrypoint.sh rewrites the loopback hosts in the
-# copied OpenCode config instead.
-#
-# Customize: copy this file to compose.custom.yaml (gitignored) and edit it —
-# sandbox.sh uses that file when present and reads its mode and container name
-# from it. Podman-only: compose.keepid.yaml is added automatically for rootless
-# Podman (userns_mode: keep-id).
+# Customize: copy to compose.custom.yaml (gitignored) and edit it.
+# Rootless Podman: compose.keepid.yaml is added automatically.
 
 services:
   sandbox:
@@ -34,78 +16,52 @@ services:
       context: .
       args:
         # Host UID/GID so bind-mounted files come out owned by the host user.
-        # sandbox.sh exports AGTX_BUILD_UID/AGTX_BUILD_GID (defaults shown).
         UID: ${AGTX_BUILD_UID:-1000}
         GID: ${AGTX_BUILD_GID:-1000}
-    # Fixed name: lets sandbox.sh read the container's exit code via
-    # `<runtime> inspect` (Podman's `compose up` reports 0 regardless). Runtime
-    # mode (compose.runtime.yaml) names its container agtx-runtime instead.
+    # Fixed name: lets sandbox.sh read the exit code via `<runtime> inspect`.
     container_name: agtx-sandbox
-    # Runs as the unprivileged sandbox user. It carries DAC_OVERRIDE (see
-    # cap_add) so the entrypoint can read the host's own config — typically
-    # 700 and owned by the host user — and stage a copy into the sandbox home.
-    # The image is built with AGTX_BUILD_UID = the host UID (sandbox.sh), so on
-    # a host with a 700 home the sandbox user is the config's owner anyway.
+    # Unprivileged; DAC_OVERRIDE (below) lets the entrypoint read the host's
+    # own 700 config to stage a copy.
     user: sandbox
     working_dir: /home/sandbox/workspace
     command: ["agtx", "/home/sandbox/workspace"]
-    # TUI: needs a live TTY and stdin.
+    # TUI needs a live TTY and stdin
     stdin_open: true
     tty: true
-    # bridge by default; sandbox.sh sets SANDBOX_NET_MODE=host (on Linux) so the
-    # sandbox can reach the host's own services — what a locally-hosted model
-    # needs (e.g. Ollama on localhost). See the networking note in the header.
+    # bridge by default; host (Linux) so the sandbox reaches host services
     network_mode: ${SANDBOX_NET_MODE:-bridge}
     environment:
-      # Tells the entrypoint to pre-configure a disposable copy of the config
-      # (trust, settings, auto_trust). compose.runtime.yaml sets AGTX_MODE=runtime
-      # so the entrypoint leaves the host's real config untouched instead.
+      # sandbox: entrypoint pre-configures a disposable config copy.
+      # runtime (compose.runtime.yaml): leave the host's real config alone.
       - AGTX_MODE=sandbox
-      # host or bridge; the entrypoint uses this to adapt local-model configs.
-      # sandbox.sh sets it to match the network_mode it selects.
+      # host or bridge; entrypoint uses it to adapt local-model configs
       - SANDBOX_NET_MODE=${SANDBOX_NET_MODE:-bridge}
-    # Least privilege, matching the previous `docker run` flags.
+    # Least privilege
     cap_drop: [ALL]
     cap_add: [CHOWN, DAC_OVERRIDE, SETUID, SETGID]
     security_opt:
       - no-new-privileges:true
     volumes:
-      # The project, writable — the only host path the agent can touch.
+      # The project, writable — the only host path the agent can touch
       - ${PROJECT}:/home/sandbox/workspace
-      # agtx state (trust store, project DBs) persists here across runs; host
-      # settings are staged read-only below and copied in at startup, so this
-      # volume never sees the host's state files.
+      # agtx state persists here; host settings are staged ro below, copied in
+      # at startup, so this volume never sees the host's state
       - agtx-data:/home/sandbox/.config/agtx
-      # --- Host agent settings, staged read-only and copied in at startup. ---
-      # Each is mounted read-only so the container never writes back to the
-      # host. sandbox.sh pre-creates any that are absent (as your host user),
-      # and entrypoint.sh skips an empty one — so a setting you do not have is
-      # a no-op rather than an error.
-      # Claude credentials/config directory (copied into the writable home).
+      # Host agent settings, staged ro and copied in at startup (never written
+      # back). sandbox.sh pre-creates any absent ones; empty ones no-op.
       - ${HOME}/.claude:/claude-host:ro
-      # Claude onboarding state + per-directory trust map.
       - ${HOME}/.claude.json:/claude-host.json:ro
-      # Your global agtx settings file.
       - ${HOME}/.config/agtx/config.toml:/agtx-host-config.toml:ro
-      # Your global agtx plugins directory.
       - ${HOME}/.config/agtx/plugins:/agtx-host-plugins:ro
-      # Your OpenCode global config (provider + model selection).
       - ${HOME}/.config/opencode:/opencode-host:ro
-    # --- Optional settings (off by default). ---
-    # Expose a container port on the host (none are needed for the TUI). Note
-    # this cannot be combined with network_mode: host, which is the Linux
-    # default — Docker rejects `ports` on a host-networked service:
+    # Optional (off by default):
     #   ports:
-    #     - "3000:3000"
-    # Set a restart policy:
+    #     - "3000:3000"            # not compatible with network_mode: host
     #   restart: unless-stopped
-    # To use a prebuilt image instead of the local Dockerfile, change the
-    # image: value above (and drop the build: block).
-    # To add an environment variable, append it to the environment: list above.
-    # To run against the host's network (local models), set SANDBOX_NET_MODE=host
-    # (sandbox.sh does this on Linux automatically).
+    # Prebuilt image instead of the local build: change image:, drop build:.
+    # Extra env: append to the environment: list.
+    # Local models: set SANDBOX_NET_MODE=host (sandbox.sh does this on Linux).
 
 volumes:
-  # Declared at top level so the bind above is a named volume, not a
-  # bind-mount of a path literally named "agtx-data".
+  # Top-level so the bind above is a named volume, not a literal "agtx-data" dir
   agtx-data:

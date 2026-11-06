@@ -1,14 +1,13 @@
 FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-# Ubuntu's OpenSSL auto-enables its FIPS provider when the host kernel is in
-# FIPS mode, but this image ships no FIPS provider module, so every digest
-# fails there (e.g. the ca-certificates postinst). No-op on non-FIPS hosts.
+# Ubuntu's OpenSSL auto-enables FIPS when the host kernel is in FIPS mode, but
+# this image ships no FIPS module, so digests fail there. No-op otherwise.
 ENV OPENSSL_FORCE_FIPS_MODE=0
 
 ARG NODE_MAJOR=22
 
-# System dependencies + Node.js via NodeSource (handles arch automatically)
+# System deps + Node.js via NodeSource (handles arch automatically)
 RUN apt-get update && apt-get install -y \
     curl git tmux ca-certificates \
     && curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
@@ -25,33 +24,28 @@ RUN npm install -g opencode-ai
 RUN curl -fsSL https://raw.githubusercontent.com/fynnfluegge/agtx/main/install.sh \
     | AGTX_INSTALL_DIR=/usr/local/bin bash
 
-# The container's agtx is baked into the image; a release-check notice inside it
-# would point at an update the user cannot apply from here, and every container
-# start would spend a request against the shared-IP GitHub rate limit.
+# Skip the in-image update check: the user can't apply it from here, and every
+# start would burn a request against the shared-IP GitHub rate limit.
 ENV AGTX_NO_UPDATE_CHECK=1
 
-# Non-root user — UID/GID match the host user so bind-mounted files stay correctly owned
+# Non-root user; UID/GID match the host so bind-mounted files stay owned
 ARG UID=1000
 ARG GID=1000
-# `groupadd -g` fails (exit 4) when the GID is already taken, which it is for
-# every macOS user: `id -g` is 20 there, and GID 20 is `dialout` in Ubuntu 24.04.
-# Reuse whatever group already owns the GID instead — the point is only that
-# bind-mounted files come out owned by the host user, and the group's *name* is
-# irrelevant to that.
+# `groupadd -g` fails when the GID is taken (GID 20 is `dialout` on Ubuntu, and
+# 20 is the default GID on macOS), so reuse the existing group — only the UID
+# ownership matters for the bind mounts.
 RUN userdel -r ubuntu 2>/dev/null || true && \
     groupdel ubuntu 2>/dev/null || true && \
     groupadd -g "${GID}" sandbox 2>/dev/null || true && \
     useradd -m -u "${UID}" -g "${GID}" -s /bin/bash sandbox
 
 COPY --chown=root:root entrypoint.sh /usr/local/bin/entrypoint.sh
-# Explicit mode: the container runs as the non-root `sandbox` user, which must
-# be able to *read* the script (shebang) as well as execute it. `chmod +x`
-# would leave a 700 source file unreadable by sandbox (EACCES at exec time);
-# the source mode also varies with the builder's umask.
+# Explicit 755: the non-root sandbox user must read (shebang) as well as exec
+# the script, which `chmod +x` on a 700 source wouldn't grant.
 RUN chmod 755 /usr/local/bin/entrypoint.sh
 
 # Create agtx dirs so named volume mounts inherit correct ownership.
-# Group-writable, not user-owned: rootless builds can't setuid to huge host UIDs.
+# Group-writable (not user-owned): rootless builds can't setuid to huge host UIDs.
 RUN mkdir -p /home/sandbox/.config/agtx /home/sandbox/.claude && \
     chgrp -R "${GID}" /home/sandbox && chmod -R g+w /home/sandbox
 

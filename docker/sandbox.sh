@@ -1,46 +1,13 @@
 #!/bin/bash
 set -e
 
-# agtx sandbox
-#
-# Launches the container defined in docker/compose*.yaml (in this directory) via
-# the Compose tool for the available container runtime — docker when present,
-# else podman (override with AGTX_CONTAINER_RUNTIME). Two modes share the
-# launcher:
-#
-#   sandbox (default)  compose.yaml — agtx's state is isolated in a named volume
-#                    and your host settings are staged read-only; nothing the
-#                    agent does can reach the host.
-#   runtime (AGTX_RUNTIME=1)  compose.runtime.yaml — your host's real config and
-#                    state are mounted writable, so agtx writes config/status/
-#                    updates straight to the host. The in-container equivalent of
-#                    installing agtx: another way to run it, not a jail.
-#
+# agtx sandbox launcher — runs the compose definition (sandbox by default, or
+# runtime with AGTX_RUNTIME=1). Picks docker/podman, pre-creates host paths,
+# plants the macOS Keychain credential, attaches the terminal, captures exit.
 # Customize: copy compose.yaml (or compose.runtime.yaml) to compose.custom.yaml
-# (gitignored) and edit it. When present, that file is used instead and it is
-# self-describing — its AGTX_MODE and container_name drive the rest of the
-# launcher. The base files already carry every mount and the network mode, so
-# there is no per-asset fragment selection; the only fragment is
-# compose.keepid.yaml (rootless Podman only).
-#
-# The container definition lives in the compose file; this script only does what
-# cannot be a compose value:
-#
-#   * pick the runtime (docker / podman),
-#   * pick the mode (sandbox vs runtime) and its base compose file,
-#   * pre-create the host asset paths it mounts (so none are created root-owned),
-#   * pick the network mode (sandbox only: host networking on by default),
-#   * plant the macOS Keychain credential (Darwin only) before the agent starts,
-#   * attach the caller's terminal — compose `up` attaches logs, not stdin,
-#   * capture the container's exit code and tear the container down.
-#
-# Usage:
-#   ./docker/sandbox.sh [path/to/project]            # sandbox mode (default)
-#   AGTX_RUNTIME=1 ./docker/sandbox.sh [path/to/project]   # runtime mode
-#   (defaults to current directory)
+# (gitignored) and edit it; sandbox.sh uses it when present.
 
-# Remember where the script was invoked: the project argument (and the default
-# when none is given) is relative to the caller, not to this script's directory.
+# Resolve the caller's dir: the project arg (and default) is relative to it.
 CALLER_PWD="$(pwd)"
 DOCKER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DOCKER_DIR"
@@ -57,21 +24,19 @@ success() { echo -e "${GREEN}==>${NC} $1"; }
 warn()    { echo -e "${YELLOW}==>${NC} $1"; }
 error()   { echo -e "${RED}==>${NC} $1"; exit 1; }
 
-# Resolve project path portably (realpath not available on all macOS versions)
+# realpath is missing on some macOS versions
 resolve_path() {
     cd "$1" && pwd -P
 }
 
-# Container runtime: docker when installed, else podman (AGTX_CONTAINER_RUNTIME overrides)
+# docker when installed, else podman (override: AGTX_CONTAINER_RUNTIME)
 CR="${AGTX_CONTAINER_RUNTIME:-docker}"
 command -v "$CR" &>/dev/null || CR=podman
 command -v "$CR" &>/dev/null || error "no container runtime found — install docker or podman"
 
-# Mode + the base compose file it uses. A user-local custom definition
-# (compose.custom.yaml, gitignored) is a full copy of one of the defaults that
-# the user has edited; when present it wins, and it is self-describing (its
-# AGTX_MODE drives the mode). Otherwise AGTX_RUNTIME=1 selects runtime mode
-# (host config/state mounted writable); anything else is sandbox mode (default).
+# Mode + base compose file. A gitignored compose.custom.yaml wins and is
+# self-describing (its AGTX_MODE drives the mode); else AGTX_RUNTIME=1 picks
+# runtime, anything else is sandbox.
 if [ -f "compose.custom.yaml" ]; then
     BASE=compose.custom.yaml
     # Match the real env-list item, not a comment mentioning AGTX_MODE=runtime.
@@ -85,32 +50,27 @@ elif [ "${AGTX_RUNTIME:-0}" = "1" ]; then
 else
     MODE=sandbox; BASE=compose.yaml
 fi
-# Container name for attach/inspect/exec: read it from the base file, falling
-# back to the mode convention (agtx-sandbox / agtx-runtime).
+# Read container_name from the base file; fall back to the mode convention.
 CN="$(grep -Eo '^[[:space:]]*container_name:[[:space:]]*[^[:space:]]+' "$BASE" | head -n1 | awk '{print $2}')"
 CONTAINER="${CN:-$([ "$MODE" = runtime ] && echo agtx-runtime || echo agtx-sandbox)}"
 
-# Networking: host by default so the container can reach the host's own
-# services (what a locally-hosted model needs, e.g. Ollama on localhost).
-# Podman on macOS cannot set up host networking (crun fails with an OCI
-# permission error), so it is off by default there; AGTX_HOST_NETWORK=1 forces
-# it on and =0 forces it off. When on, the entrypoint knows via SANDBOX_NET_MODE
-# so it can leave local-model provider configs pointing at localhost.
-#
-# Applies in BOTH sandbox and runtime modes: the model endpoint is a network
-# service on the host's loopback, independent of how the config is mounted.
+# Sandbox networking: host by default on Linux (so the sandbox reaches the
+# host's own services, e.g. Ollama on localhost). Podman on macOS can't do
+# host networking, so it stays bridge there. AGTX_HOST_NETWORK=1/0 forces it.
 NET=""
-case "${AGTX_HOST_NETWORK:-}" in
-    1) NET=host ;;
-    0) NET= ;;
-    *) [ "$(uname -s)" != "Darwin" ] && NET=host ;;
-esac
+if [ "$MODE" = sandbox ]; then
+    case "${AGTX_HOST_NETWORK:-}" in
+        1) NET=host ;;
+        0) NET= ;;
+        *) [ "$(uname -s)" != "Darwin" ] && NET=host ;;
+    esac
+fi
 export SANDBOX_NET_MODE="${NET:-bridge}"
 
 RAW_PROJECT="${1:-$CALLER_PWD}"
 
-# We are already in docker/ for compose, so resolve a relative project path
-# against the directory the caller invoked us from.
+# We're in docker/ for compose, so resolve a relative project path against the
+# caller's directory.
 case "$RAW_PROJECT" in
     /*) ;;
     *)  RAW_PROJECT="$CALLER_PWD/$RAW_PROJECT" ;;
@@ -121,16 +81,13 @@ if [ ! -d "$RAW_PROJECT" ]; then
 fi
 
 PROJECT="$(resolve_path "$RAW_PROJECT")"
-# Runtime mode mounts the project under its own directory name, so agtx derives
-# the real project name (and a path-keyed DB) instead of the generic "workspace".
+# Runtime mode mounts the project under its own name so agtx derives the real
+# project name (and path-keyed DB) instead of the generic "workspace".
 PROJECT_NAME="$(basename "$PROJECT")"
 
-# Both modes bind-mount host config paths. Pre-create any that do not exist, as
-# the host user, so the container runtime never auto-creates them root-owned.
-# Idempotent: an existing file/directory is left untouched, and an empty one
-# stages as a no-op at startup (see entrypoint.sh). The JSON file is seeded with
-# a valid empty object (not a zero-byte file) so a host-side reader never sees
-# invalid JSON.
+# Pre-create the host config paths we mount, as the host user, so a bind mount
+# never auto-creates them root-owned. Empty ones no-op in the entrypoint; the
+# JSON file gets a valid empty object (not zero bytes).
 mkdir -p "${HOME}/.config/agtx/plugins" "${HOME}/.config/opencode" "${HOME}/.claude"
 [ -f "${HOME}/.claude.json" ]             || printf '{}\n' > "${HOME}/.claude.json"
 [ -f "${HOME}/.config/agtx/config.toml" ] || touch "${HOME}/.config/agtx/config.toml"
@@ -145,7 +102,7 @@ info "Project : $PROJECT"
 info "Mode    : $MODE"
 info "User    : sandbox (non-root, uid=$(id -u))"
 info "Runtime : $CR (compose)"
-info "Network : $SANDBOX_NET_MODE"
+[ "$MODE" = sandbox ] && info "Network : $SANDBOX_NET_MODE"
 [ "$MODE" = runtime ] && info "Workspace : $PROJECT_NAME"
 
 if [ ! -d "$PROJECT/.git" ]; then
@@ -155,38 +112,27 @@ if [ ! -d "$PROJECT/.git" ]; then
     echo ""
 fi
 
-# Expose the host identity to compose: the image build uses the UID/GID, and the
-# base file's mounts reference the resolved project and home paths.
+# Expose identity to compose: build uses UID/GID; mounts reference resolved paths.
 export PROJECT
 export PROJECT_NAME
 export AGTX_BUILD_UID="$(id -u)"
 export AGTX_BUILD_GID="$(id -g)"
 
-# Build image with host UID/GID so files created in the container are owned correctly
+# Build the image with the host UID/GID so container-created files are owned correctly
 info "Building image..."
 "$CR" compose -f "$BASE" build
 success "Image ready"
 echo ""
 
-# The base file already carries every mount and the network mode, so there is no
-# per-asset fragment selection (the host paths are pre-created above instead).
-# The only fragment is keep-id, which applies only to rootless Podman (Docker
-# does not use userns_mode).
+# keep-id only applies to rootless Podman (Docker doesn't use userns_mode)
 F="-f $BASE"
 [ "$CR" = "podman" ] && [ "$(id -u)" -ne 0 ] && F="$F -f compose.keepid.yaml"
 
-# On macOS the Claude OAuth token lives in the Keychain, not in `~/.claude`, so
-# copying that directory leaves the container on "Not logged in · Please run
-# /login". Materialise the same `.credentials.json` Claude Code writes on Linux.
-#
-# The secret is piped through stdin: never written to a host temp file, and never
-# placed in argv where `ps` would expose it. It is planted after the container is
-# up (detached) but before we attach, so no agent starts before it lands.
-#
-# This needs `compose attach`, which Docker Compose has but podman-compose does
-# not — and the Keychain case is Darwin-only, where the runtime is Docker. On
-# Podman (Linux) there is no Keychain credential to plant, so it never reaches
-# this branch.
+# macOS: the Claude OAuth token lives in the Keychain, not ~/.claude, so
+# materialise the .credentials.json Claude Code writes on Linux. Piped via stdin
+# (never to a host temp file or argv); planted after up, before attach. Needs
+# `compose attach` (Docker only); the Keychain case is Darwin-only, so Podman
+# never reaches this.
 CLAUDE_CREDS=""
 if [ "$(uname -s)" = "Darwin" ] && [ ! -f "${HOME}/.claude/.credentials.json" ]; then
     CLAUDE_CREDS="$(security find-generic-password -s 'Claude Code-credentials' -w 2>/dev/null || true)"
@@ -197,18 +143,13 @@ if [ "$(uname -s)" = "Darwin" ] && [ ! -f "${HOME}/.claude/.credentials.json" ];
     fi
 fi
 
-# Best-effort: drop any stale container from a previous run so the fixed
-# container_name never conflicts. In sandbox mode this keeps the named state
-# volume; in runtime mode there is no volume (state lives on the host).
+# Drop any stale container from a previous run so the fixed container_name
+# never conflicts.
 "$CR" compose $F down >/dev/null 2>&1 || true
 
-# Start detached, then attach this terminal. `compose up` in the foreground
-# attaches stdout/logs but not stdin, and the agtx TUI needs both — plain `up`
-# leaves it running with no keyboard input. Detaching first also lets the macOS
-# Keychain credential land before any agent starts.
-#
-# A non-zero code means agtx crashed, so failures must not trip `set -e` —
-# capture them explicitly.
+# Start detached, then attach: `compose up` attaches logs, not stdin, and the
+# agtx TUI needs both. A non-zero code means agtx crashed, so don't let it trip
+# `set -e` — capture explicitly.
 EXIT=0
 "$CR" compose $F up -d || EXIT=$?
 
@@ -227,14 +168,13 @@ if [ "$EXIT" -eq 0 ]; then
         "$CR" compose $F attach sandbox || ATTACHED=$?
     else
         # podman-compose has no `attach`; the fixed container_name lets the
-        # runtime-native command do it.
+        # native command do it.
         "$CR" attach "$CONTAINER" || ATTACHED=$?
     fi
 
     # Prefer the container's own exit status: attach can fail because the
-    # container already stopped, which says nothing about why agtx exited. If
-    # the container is still running (e.g. the user detached), keep attach's
-    # status instead of the running container's placeholder 0.
+    # container already stopped (which says nothing about why agtx exited). If
+    # the container is still running (user detached), keep attach's status.
     container_code=$("$CR" inspect --format '{{.State.ExitCode}}' "$CONTAINER" 2>/dev/null || true)
     if [ -n "$container_code" ]; then
         container_running=$("$CR" inspect --format '{{.State.Running}}' "$CONTAINER" 2>/dev/null || true)

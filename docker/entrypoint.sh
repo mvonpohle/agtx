@@ -1,43 +1,34 @@
 #!/bin/bash
 set -e
 
-# Runtime mode (AGTX_MODE=runtime) means the container's config IS the host's
-# real config, mounted writable (see compose.runtime.yaml). There is no
-# disposable copy to pre-configure, and we must not rewrite the host's real
-# settings — so skip every block below and just run agtx like a normal local
-# install. Sandbox mode (the default) falls through to the pre-configuration.
+# Runtime mode: the container's config IS the host's real config (mounted
+# writable), so there's nothing to pre-configure — just run agtx. Sandbox mode
+# (default) falls through to the staging below.
 if [ "${AGTX_MODE:-sandbox}" = "runtime" ]; then
     exec "$@"
 fi
 
-# --- Sandbox mode only: stage a disposable copy and pre-configure it. ---
-#
-# These run as the unprivileged sandbox user (see compose.yaml), which carries
-# DAC_OVERRIDE so it can read the host's own config — typically 700 and owned
-# by the host user — and copy a disposable version into the sandbox home. The
-# staged files are created owned by the sandbox user, so the agent (which runs
-# as the same user) can read and write them.
+# Sandbox mode: stage a disposable copy of the host config into the sandbox
+# home. Runs as the unprivileged sandbox user, which carries DAC_OVERRIDE so it
+# can read the host's own (typically 700, host-owned) config. Staged files are
+# owned by sandbox so the agent can read/write them.
 
-# Copy host ~/.claude credentials into the writable sandbox home at startup.
-# The host directory is mounted read-only at /claude-host so Claude Code can
-# read credentials without the container ever writing back to the host.
+# Copy host ~/.claude into the writable home (host dir is mounted ro at
+# /claude-host so Claude can read without writing back to the host).
 if [ -d /claude-host ]; then
     cp -rp /claude-host/. /home/sandbox/.claude/ 2>/dev/null || true
 fi
 
-# Copy the host's ~/.claude.json snapshot: onboarding state (so Claude does not
-# open on its theme picker) plus the per-directory trust map. Mounted read-only,
-# copied so the container can write to it.
+# Copy the host's ~/.claude.json (onboarding state + per-directory trust map) so
+# Claude doesn't reopen its theme picker.
 if [ -f /claude-host.json ]; then
     cp /claude-host.json /home/sandbox/.claude.json 2>/dev/null || true
     chmod u+w /home/sandbox/.claude.json 2>/dev/null || true
 fi
 
-# Copy the host's OpenCode global config (provider + model selection) into the
-# writable sandbox home, the same way ~/.claude is copied above. Only the config
-# file is worth copying — the plugin runtime (node_modules) OpenCode manages
-# itself and is host-specific. Without this a fresh container has no provider
-# and opens on a "no provider" state.
+# Copy the host's OpenCode global config (provider + model) — without it a fresh
+# container has no provider. Only the config file is worth copying; the plugin
+# runtime (node_modules) is host-specific.
 if [ -d /opencode-host ]; then
     mkdir -p /home/sandbox/.config/opencode
     cp -f /opencode-host/opencode.json  /home/sandbox/.config/opencode/ 2>/dev/null || true
@@ -45,13 +36,10 @@ if [ -d /opencode-host ]; then
     cp -f /opencode-host/opencode.json5 /home/sandbox/.config/opencode/ 2>/dev/null || true
 fi
 
-# On bridge networking (e.g. podman on macOS, where --network host is
-# unavailable) the container's localhost is not the host's: a provider pointed
-# at a local model (e.g. Ollama on localhost:11434) is unreachable as
-# configured. Discover the host as seen from here — the slirp gateway, Docker's
-# host alias, or the bridge gateway — and rewrite the loopback hosts in the
-# COPIED config (any port, any provider). The host's real config is never
-# touched; if nothing responds the config is left as-is and we warn.
+# On bridge networking (e.g. podman on macOS) the container's localhost is not
+# the host's, so a provider pointed at a local model is unreachable. Discover the
+# host as seen from here and rewrite the loopback hosts in the COPIED config
+# (any port/provider). The host's real config is never touched.
 if [ "${SANDBOX_NET_MODE:-bridge}" != "host" ] && [ -d /opencode-host ]; then
     oc_cfg=/home/sandbox/.config/opencode
     oc_refs=$(cat "$oc_cfg"/opencode.json* 2>/dev/null | grep -ohE 'https?://(localhost|127\.0\.0\.1)(:[0-9]+)?' | sort -u)
@@ -59,7 +47,7 @@ if [ "${SANDBOX_NET_MODE:-bridge}" != "host" ] && [ -d /opencode-host ]; then
         # Probe on the first referenced port; all local services share the host.
         oc_port=$(printf '%s\n' "$oc_refs" | grep -oE ':[0-9]+$' | head -n1 | tr -d ':')
         [ -n "$oc_port" ] || oc_port=11434
-        # Default gateway. No iproute2 in the image, so decode /proc/net/route.
+        # No iproute2 in the image, so decode /proc/net/route for the gateway.
         def_gw=$(node -e '
             try {
                 const lines = require("fs").readFileSync("/proc/net/route", "utf8").trim().split("\n").slice(1);
@@ -75,9 +63,8 @@ if [ "${SANDBOX_NET_MODE:-bridge}" != "host" ] && [ -d /opencode-host ]; then
         oc_host=""
         for cand in 10.0.2.2 host.docker.internal 172.17.0.1 ${def_gw:-}; do
             [ -n "$cand" ] || continue
-            # --noproxy '*': probe directly. On proxied networks (corporate HPC)
-            # an http_proxy env var would answer every probe for the proxy's own
-            # error page and fake a reachable host.
+            # --noproxy '*': probe directly, or a http_proxy env would answer
+            # every probe and fake a reachable host.
             if curl -s --max-time 1 --noproxy '*' -o /dev/null "http://$cand:$oc_port/"; then
                 oc_host=$cand
                 break
@@ -88,9 +75,7 @@ if [ "${SANDBOX_NET_MODE:-bridge}" != "host" ] && [ -d /opencode-host ]; then
                 [ -f "$f" ] || continue
                 sed -i -E "s#(https?)://(localhost|127\.0\.0\.1)(:[0-9]+)?#\1://$oc_host\3#g" "$f"
             done
-            # The agent's own HTTP client honors http_proxy too; make sure the
-            # rewritten host bypasses it, or the model traffic still goes to the
-            # proxy instead of the host.
+            # Make the rewritten host bypass the agent's http_proxy too.
             export no_proxy="$oc_host${no_proxy:+,$no_proxy}"
             export NO_PROXY="$oc_host${NO_PROXY:+,$NO_PROXY}"
             echo "opencode: local model host rewritten for bridge networking: $oc_refs -> $oc_host"
@@ -100,10 +85,8 @@ if [ "${SANDBOX_NET_MODE:-bridge}" != "host" ] && [ -d /opencode-host ]; then
     fi
 fi
 
-# Trust the workspace for Claude. Trust records are path-keyed and the project is
-# mounted at a path the host never used, so the copied map above never matches it.
-# Appropriate here for the same reason as the bypass pre-accept: an isolated,
-# disposable container holding nothing but the project.
+# Trust the workspace for Claude. Trust records are path-keyed and the project
+# is mounted at a path the host never used, so the copied map never matches it.
 node -e "
     const fs = require('fs');
     const p = '/home/sandbox/.claude.json';
@@ -115,11 +98,10 @@ node -e "
     fs.writeFileSync(p, JSON.stringify(d, null, 2));
 "
 
-# Drop empty auth keys from the copied settings.json. That `env` block outranks
-# process env, so an `ANTHROPIC_AUTH_TOKEN: ""` left over from a proxy setup
-# shadows *both* the Keychain credentials planted above and a real
-# ANTHROPIC_API_KEY — and the agent reports "Not logged in" with valid auth
-# available. The host file is untouched; only the container's copy is edited.
+# Drop empty auth keys from the copied settings.json: that `env` block outranks
+# process env, so a leftover ANTHROPIC_AUTH_TOKEN:"" would shadow the planted
+# credentials and a real API key, making the agent report "Not logged in".
+# Host file untouched; only the container copy is edited.
 settings_env=/home/sandbox/.claude/settings.json
 if [ -f "$settings_env" ]; then
     node -e "
@@ -139,9 +121,8 @@ if [ -f "$settings_env" ]; then
     "
 fi
 
-# Pre-accept the bypass permissions prompt — appropriate because we are inside
-# an isolated container with no access to the host filesystem beyond the
-# project directory.
+# Pre-accept the bypass permission prompt: we're in an isolated container with
+# no host access beyond the project dir.
 settings=/home/sandbox/.claude/settings.json
 if [ -f "$settings" ]; then
     node -e "
@@ -154,16 +135,14 @@ else
     echo '{"skipDangerousModePermissionPrompt":true}' > "$settings"
 fi
 
-# Copy the host's global agtx settings into the writable sandbox home.
-# Mounted read-only so the container never writes back to the host.
+# Copy the host's global agtx settings + plugins (mounted ro).
 [ -f /agtx-host-config.toml ] && cp -f /agtx-host-config.toml /home/sandbox/.config/agtx/config.toml 2>/dev/null || true
 if [ -d /agtx-host-plugins ]; then
     rm -rf /home/sandbox/.config/agtx/plugins
     cp -r /agtx-host-plugins /home/sandbox/.config/agtx/plugins 2>/dev/null || true
 fi
 
-# Turn on auto_trust inside the sandbox (no human at the board to answer trust
-# prompts). Skipped when the config dir isn't writable.
+# Turn on auto_trust (no human at the board to answer trust prompts).
 if [ -w /home/sandbox/.config/agtx ]; then
     mkdir -p /home/sandbox/.config/agtx
     agtx_config=/home/sandbox/.config/agtx/config.toml
