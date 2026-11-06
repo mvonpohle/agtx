@@ -22,12 +22,23 @@
 # name "workspace". A dedicated parent keeps the name from colliding with the
 # container home's own entries (.config, .claude, ...).
 #
-#   PROJECT=/path/to/project PROJECT_NAME=$(basename /path/to/project) \
-#       docker compose -f compose.runtime.yaml up
+# Sidebar switching across projects: agtx lists every project it has ever seen
+# but silently skips one whose path is absent. So in the container, only projects
+# that are mounted are reachable. To make a whole group of projects (the launched
+# one plus its siblings) switchable at once, set PROJECTS_DIR to their shared
+# parent — it is mounted at /home/sandbox/workspaces and each project appears at
+# /home/sandbox/workspaces/<name>. See the volumes section and docker/.env.
 #
-# or via the launcher (AGTX_RUNTIME=1 selects this file):
+# Launch via the launcher (recommended — it attaches the TUI's stdin and computes
+# WORKSPACE_MOUNT from PROJECT and PROJECTS_DIR):
 #
 #   AGTX_RUNTIME=1 ./docker/sandbox.sh path/to/your-project
+#
+# A direct compose launch is possible but must set WORKSPACE_MOUNT itself (the
+# launcher normally computes it) and will not attach the TUI's stdin:
+#
+#   WORKSPACE_MOUNT=/path/to/project:/home/sandbox/workspaces/project \
+#       docker compose -f compose.runtime.yaml up
 
 services:
   sandbox:
@@ -68,12 +79,22 @@ services:
     security_opt:
       - no-new-privileges:true
     volumes:
-      # The project, writable — the path agtx works on. Mounted under its own
-      # name so the board shows the real project and each project gets its own
-      # path-keyed database.
-      # Quoted so the ": " inside the error message does not make YAML parse
-      # the line as a mapping instead of a string.
-      - "${PROJECT:?required: set PROJECT to the project directory, or use ./docker/sandbox.sh (it defaults to your cwd and derives PROJECT_NAME)}:/home/sandbox/workspaces/${PROJECT_NAME:-workspace}"
+      # The project (or its shared root), writable — the path agtx works on. By
+      # default the launched project is mounted under its own name so the board
+      # shows the real project and each project gets its own path-keyed database.
+      #
+      # Set PROJECTS_DIR (see docker/.env) to the directory that CONTAINS the
+      # project and its siblings, and it is mounted at /home/sandbox/workspaces
+      # instead. agtx silently skips a project whose path is absent, so without
+      # this only the launched project would be reachable in the sidebar; with
+      # it, every project in that root is reachable at /home/sandbox/workspaces/<name>.
+      #
+      # WORKSPACE_MOUNT is computed by sandbox.sh as "source:target" from PROJECT
+      # (and PROJECTS_DIR when set); podman-compose's substitution breaks on
+      # nested ${VAR:-default}, so the compose file keeps it to one flat value.
+      # Quoted so the ": " inside the error message does not make YAML parse the
+      # line as a mapping instead of a string.
+      - "${WORKSPACE_MOUNT:?use ./docker/sandbox.sh — it sets WORKSPACE_MOUNT from PROJECT and PROJECTS_DIR}"
       # Your real agtx config AND state, WRITABLE, at the normal location. This
       # is what "writes config/status/updates back to the host" means: config.toml,
       # plugins/, the trust store, and the project databases all live here.

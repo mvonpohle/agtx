@@ -20,6 +20,9 @@ Thumbs.db
 # User-local compose customization (a copy of a default, edited freely)
 docker/compose.custom.yaml
 
+# User-local launcher overrides (host-specific paths such as PROJECTS_DIR)
+docker/.env
+
 # Logs
 *.log
 

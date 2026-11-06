@@ -45,6 +45,18 @@ CALLER_PWD="$(pwd)"
 DOCKER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$DOCKER_DIR"
 
+# Load user-local overrides (PROJECTS_DIR, AGTX_BUILD_UID, ...) from docker/.env
+# if present. The launcher exports what it reads, so the compose process sees the
+# same values whether it is docker-compose or podman-compose (which may not parse
+# .env itself); compose also reads the file directly for its own substitution.
+# docker/.env is gitignored — it holds host-specific paths.
+if [ -f .env ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . ./.env
+    set +a
+fi
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -125,6 +137,33 @@ PROJECT="$(resolve_path "$RAW_PROJECT")"
 # the real project name (and a path-keyed DB) instead of the generic "workspace".
 PROJECT_NAME="$(basename "$PROJECT")"
 
+# Runtime mode can mount the shared projects root (PROJECTS_DIR) instead of just
+# the launched project, so every project in that root is reachable in the
+# container for sidebar switching. agtx silently skips a project whose path does
+# not exist (see switch_to_project_keep_sidebar), so a project is only reachable
+# if it is mounted; exposing the whole root makes all of them reachable at once.
+# The root is mounted at /home/sandbox/workspaces and the launched project must
+# be a direct child of it (basename == PROJECT_NAME). When PROJECTS_DIR is unset
+# (the default) the single project is mounted, as before.
+if [ "$MODE" = runtime ]; then
+    if [ -n "${PROJECTS_DIR:-}" ]; then
+        PROJECTS_DIR="$(resolve_path "$PROJECTS_DIR")"
+        if [ "$(dirname "$PROJECT")" != "$PROJECTS_DIR" ]; then
+            error "PROJECTS_DIR ($PROJECTS_DIR) must be the parent of PROJECT ($PROJECT)"
+        fi
+        WORKSPACE_SRC="$PROJECTS_DIR"
+        WORKSPACE_DST="/home/sandbox/workspaces"
+    else
+        WORKSPACE_SRC="$PROJECT"
+        WORKSPACE_DST="/home/sandbox/workspaces/${PROJECT_NAME}"
+    fi
+    # The compose file references one variable holding the full "source:target"
+    # (podman-compose's substitution breaks on nested ${VAR:-default}, so keep it
+    # a single flat value).
+    WORKSPACE_MOUNT="${WORKSPACE_SRC}:${WORKSPACE_DST}"
+    export WORKSPACE_SRC WORKSPACE_DST WORKSPACE_MOUNT
+fi
+
 # Both modes bind-mount host config paths. Pre-create any that do not exist, as
 # the host user, so the container runtime never auto-creates them root-owned.
 # Idempotent: an existing file/directory is left untouched, and an empty one
@@ -147,6 +186,8 @@ info "User    : sandbox (non-root, uid=$(id -u))"
 info "Runtime : $CR (compose)"
 info "Network : $SANDBOX_NET_MODE"
 [ "$MODE" = runtime ] && info "Workspace : $PROJECT_NAME"
+[ "$MODE" = runtime ] && [ -n "${PROJECTS_DIR:-}" ] && \
+    info "Projects  : $PROJECTS_DIR (all sibling projects switchable in the sidebar)"
 
 if [ ! -d "$PROJECT/.git" ]; then
     warn "$PROJECT is not a git repository"

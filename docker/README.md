@@ -50,6 +50,16 @@ Runtime mode mounts the project under its own directory name inside the containe
 the AGTX board shows it rather than the sandbox's generic `workspace`. Sandbox
 mode keeps the generic name because its state is isolated.
 
+**Switching between projects.** agtx lists every project it has ever seen but
+silently skips one whose path does not exist — so in the container, only mounted
+projects are reachable in the sidebar. By default only the launched project is
+mounted. To make a group of projects switchable at once, set `PROJECTS_DIR`
+(in `docker/.env` or the environment) to the directory that *contains* them as
+direct children; runtime mode then mounts that whole root at
+`/home/sandbox/workspaces`, so each project appears at
+`/home/sandbox/workspaces/<name>`. Leave `PROJECTS_DIR` unset to keep mounting
+only the launched project.
+
 The container is named `agtx-runtime` in this mode (sandbox mode uses
 `agtx-sandbox`), so `docker inspect` / `podman inspect` and `stop` address the
 right one.
@@ -86,14 +96,15 @@ Delete `docker/compose.custom.yaml` to go back to the defaults.
   PROJECT=/path/to/project docker compose -f docker/compose.yaml up -d
   PROJECT=/path/to/project docker compose -f docker/compose.yaml attach sandbox
 
-  # runtime
-  PROJECT=/path/to/project PROJECT_NAME=$(basename /path/to/project) \
+  # runtime (WORKSPACE_MOUNT is normally computed by sandbox.sh; set it here)
+  WORKSPACE_MOUNT=/path/to/project:/home/sandbox/workspaces/project \
     docker compose -f docker/compose.runtime.yaml up -d
-  PROJECT=/path/to/project PROJECT_NAME=$(basename /path/to/project) \
+  WORKSPACE_MOUNT=/path/to/project:/home/sandbox/workspaces/project \
     docker compose -f docker/compose.runtime.yaml attach sandbox
 
   # tear down afterwards
-  PROJECT=/path/to/project docker compose -f docker/compose.yaml down
+  WORKSPACE_MOUNT=/path/to/project:/home/sandbox/workspaces/project \
+    docker compose -f docker/compose.runtime.yaml down
   ```
 
   > A foreground `up` is not enough for the TUI: compose's foreground mode
@@ -102,4 +113,4 @@ Delete `docker/compose.custom.yaml` to go back to the defaults.
   > Podman the attach step is the runtime-native command, because
   > `podman-compose` has no `attach` subcommand:
   > `podman attach agtx-runtime` (or `agtx-sandbox`).
-- **Files:** `compose.yaml` (sandbox) and `compose.runtime.yaml` (runtime), each self-contained with reasonable defaults + commented optional settings; `compose.keepid.yaml` (rootless-Podman-only `user: "0"` override, added automatically); `compose.custom.yaml` (optional, gitignored — your edited copy of a default); `sandbox.sh` (launcher); `entrypoint.sh` (startup config); `Dockerfile`.
+- **Files:** `compose.yaml` (sandbox) and `compose.runtime.yaml` (runtime), each self-contained with reasonable defaults + commented optional settings; `compose.keepid.yaml` (rootless-Podman-only `user: "0"` override, added automatically); `compose.custom.yaml` (optional, gitignored — your edited copy of a default); `.env` (optional, gitignored — host-specific launcher overrides such as `PROJECTS_DIR`); `sandbox.sh` (launcher); `entrypoint.sh` (startup config); `Dockerfile`.
