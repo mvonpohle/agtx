@@ -1,8 +1,8 @@
 # agtx container
 
-Run agtx in a container (Docker or Podman, including rootless Podman). One
-launcher — `sandbox.sh` — with two modes, and the container itself defined in
-two self-contained files: `compose.yaml` (sandbox) and `compose.runtime.yaml`
+Run agtx in a container (Docker or Podman, including rootless Podman). Two
+launchers with two modes — the container definitions themselves live in two
+self-contained files: `compose.yaml` (sandbox) and `compose.runtime.yaml`
 (runtime). Each carries reasonable defaults with commented-out optional
 settings; to make your own tweaks, copy one to the gitignored
 `compose.custom.yaml` (see [Customize](#customize)).
@@ -22,15 +22,14 @@ read-only, so nothing the agent does can reach the host.
 ## Local models (host networking)
 
 If your agent's provider is a model hosted *on this machine* (e.g. Ollama on
-`localhost:11434` in OpenCode's config), the sandbox must reach the host's
-loopback:
+`localhost:11434`), the container must reach the host's loopback:
 
 - **Host networking is on by default** (Linux), so this just works.
 - On macOS Podman cannot do host networking, so it falls back to bridge and the
-  entrypoint rewrites the loopback hosts in the *copied* OpenCode config to
-  whichever host address it can actually reach (slirp gateway,
-  `host.docker.internal`, or the bridge gateway). Your real config is never
-  touched.
+  entrypoint rewrites the loopback hosts in the container's config (the staged
+  copy in sandbox mode, the real config in runtime mode) to whichever host
+  address it can actually reach (slirp gateway, `host.docker.internal`, or the
+  bridge gateway). Your real config is never touched in runtime mode.
 - Override either way: `AGTX_HOST_NETWORK=1` forces host networking on, `=0` off.
 
 ## Runtime (no sandbox)
@@ -42,7 +41,7 @@ config supplies its provider/model selection. Same least-privilege caps.
 
 ```bash
 # On a project, writing config/state back to the host
-AGTX_RUNTIME=1 ./docker/sandbox.sh path/to/your-project
+./docker/runtime.sh path/to/your-project
 ```
 
 Runtime mode mounts the project under its own directory name inside the container
@@ -77,34 +76,36 @@ tweaks that survive repo updates and never pollute the repo:
    # or: cp docker/compose.runtime.yaml docker/compose.custom.yaml   # runtime
    ```
 2. Edit `docker/compose.custom.yaml` freely.
-3. Run `./docker/sandbox.sh` as usual — it uses `compose.custom.yaml` when
-   present and reads its mode (`AGTX_MODE`) and container name from it.
+3. Run `./docker/sandbox.sh` or `./docker/runtime.sh` as usual — it uses
+   `compose.custom.yaml` when present and reads its mode (`AGTX_MODE`) and
+   container name from it.
 
 Delete `docker/compose.custom.yaml` to go back to the defaults.
 
-> Note: `sandbox.sh` pre-creates the host config paths it mounts (e.g.
+> Note: both launchers pre-create the host config paths they mount (e.g.
 > `~/.claude`, `~/.config/agtx`, `~/.config/opencode`) as *your host user* if
 > they do not exist yet, so a bind mount never auto-creates a root-owned
-> directory. An empty one simply stages as a no-op at startup.
+> directory. An empty one simply stages as a no-op at startup (sandbox) / mounts
+> as-is (runtime).
 
 ## Details
 
 - **Runtime:** docker when installed, else podman. Set `AGTX_CONTAINER_RUNTIME=docker|podman` to force one. The image builds on first run, then is cached.
-- **Launch a definition directly** (skip `sandbox.sh`):
+- **Launch a definition directly** (skip the launcher):
   ```bash
   # sandbox
   PROJECT=/path/to/project docker compose -f docker/compose.yaml up -d
   PROJECT=/path/to/project docker compose -f docker/compose.yaml attach sandbox
 
-  # runtime (WORKSPACE_MOUNT is normally computed by sandbox.sh; set it here)
+  # runtime (WORKSPACE_MOUNT is normally computed by the launcher; set it here)
   WORKSPACE_MOUNT=/path/to/project:/home/sandbox/workspaces/project \
-    docker compose -f docker/compose.runtime.yaml up -d
+      docker compose -f docker/compose.runtime.yaml up -d
   WORKSPACE_MOUNT=/path/to/project:/home/sandbox/workspaces/project \
-    docker compose -f docker/compose.runtime.yaml attach sandbox
+      docker compose -f docker/compose.runtime.yaml attach agtx-runtime
 
   # tear down afterwards
   WORKSPACE_MOUNT=/path/to/project:/home/sandbox/workspaces/project \
-    docker compose -f docker/compose.runtime.yaml down
+      docker compose -f docker/compose.runtime.yaml down
   ```
 
   > A foreground `up` is not enough for the TUI: compose's foreground mode
@@ -113,4 +114,13 @@ Delete `docker/compose.custom.yaml` to go back to the defaults.
   > Podman the attach step is the runtime-native command, because
   > `podman-compose` has no `attach` subcommand:
   > `podman attach agtx-runtime` (or `agtx-sandbox`).
-- **Files:** `compose.yaml` (sandbox) and `compose.runtime.yaml` (runtime), each self-contained with reasonable defaults + commented optional settings; `compose.keepid.yaml` (rootless-Podman-only `user: "0"` override, added automatically); `compose.custom.yaml` (optional, gitignored — your edited copy of a default); `.env` (optional, gitignored — host-specific launcher overrides such as `PROJECTS_DIR`); `sandbox.sh` (launcher); `entrypoint.sh` (startup config); `Dockerfile`.
+- **Files:** `compose.yaml` (sandbox), `compose.runtime.yaml` (runtime), each
+  self-contained with reasonable defaults + commented optional settings;
+  `compose.keepid.yaml` (rootless-Podman-only `user: "0"` override, added
+  automatically); `compose.custom.yaml` (optional, gitignored — your edited copy
+  of a default); `docker/.env` (optional, gitignored — host-specific launcher
+  overrides such as `PROJECTS_DIR`; see `docker/.env.example`); `docker/common.sh`
+  (shared plumbing sourced by both launchers — logging, runtime detection, `.env`
+  loading, image build, rootless-Podman keep-id, TUI runner); `docker/sandbox.sh`
+  (the jail launcher); `docker/runtime.sh` (the portable-install launcher);
+  `entrypoint.sh` (startup config); `Dockerfile`.

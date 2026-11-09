@@ -1,38 +1,31 @@
-# agtx runtime mode — the container as agtx's runtime, not a sandbox.
+# agtx runtime — the container as agtx's host (portable install), not a sandbox.
 #
 # The sandbox (compose.yaml) isolates agtx's state in a named volume and stages
 # your host settings read-only, so nothing the agent does can reach the host.
 # Runtime mode is the opposite of that isolation: it mounts your host's real
 # config and state — agtx, Claude, and OpenCode — WRITABLE at their normal
-# locations, so agtx writes its config, status, and updates straight to the
-# host. It is the in-container equivalent of installing agtx on the host —
-# another way to run agtx, not a jail. It is still a container with the same
-# least-privilege caps.
+# locations, so agtx behaves like a local install. It is the in-container
+# equivalent of installing agtx on a machine that lacks the dependencies to run
+# it natively — another way to run agtx, not a jail. Same least-privilege caps.
 #
-# sandbox.sh pre-creates any of the host paths mounted below that do not yet
-# exist (as your host user), so a bind mount never auto-creates a root-owned
-# directory on the host.
+# The thin launcher (docker/runtime.sh) pre-creates any of the host paths mounted
+# below that do not yet exist (as your host user), so a bind mount never
+# auto-creates a root-owned directory on the host.
 #
-# Customize: copy this file to compose.custom.yaml (gitignored) and edit it —
-# sandbox.sh uses that file when present and reads its mode and container name
-# from it.
+# Launch (recommended — it attaches the TUI's stdin and computes WORKSPACE_MOUNT):
 #
-# The project is mounted at /home/sandbox/workspaces/$PROJECT_NAME so agtx
-# derives the real project name for the board instead of the generic sandbox
-# name "workspace". A dedicated parent keeps the name from colliding with the
-# container home's own entries (.config, .claude, ...).
+#   ./docker/runtime.sh path/to/your-project
 #
-# Sidebar switching across projects: agtx lists every project it has ever seen
-# but silently skips one whose path is absent. So in the container, only projects
-# that are mounted are reachable. To make a whole group of projects (the launched
-# one plus its siblings) switchable at once, set PROJECTS_DIR to their shared
-# parent — it is mounted at /home/sandbox/workspaces and each project appears at
-# /home/sandbox/workspaces/<name>. See the volumes section and docker/.env.
+# Customize (see docker/.env.example):
+#   * docker/.env             — PROJECTS_DIR, AGTX_HOST_NETWORK, ... (values)
+#   * COMPOSE_OVERRIDE=<file> — an extra compose file (mounts/env/caps)
+#   * this file               — the base definition, edited directly
 #
-# Launch via the launcher (recommended — it attaches the TUI's stdin and computes
-# WORKSPACE_MOUNT from PROJECT and PROJECTS_DIR):
-#
-#   AGTX_RUNTIME=1 ./docker/sandbox.sh path/to/your-project
+# The project (or its shared root) is mounted under /home/sandbox/workspaces so
+# agtx derives the real project name. agtx silently skips a project whose path is
+# absent, so in the container only mounted projects are reachable in the sidebar.
+# Set PROJECTS_DIR to the directory that CONTAINS your projects and every one of
+# them becomes switchable at once; leave it unset to mount only the launched one.
 #
 # A direct compose launch is possible but must set WORKSPACE_MOUNT itself (the
 # launcher normally computes it) and will not attach the TUI's stdin:
@@ -73,6 +66,10 @@ services:
       # sending agtx's config to /root/.config/agtx (the overlay) instead of the
       # mounted host config. Pin it to the real home so it holds for any uid.
       - HOME=/home/sandbox
+    # bridge by default; the launchers set SANDBOX_NET_MODE=host (on Linux) so the
+    # runtime container reaches the host's own services — what a locally-hosted
+    # model (e.g. Ollama on localhost) needs. See the networking note in the header.
+    network_mode: ${SANDBOX_NET_MODE:-bridge}
     # Same least-privilege caps as the sandbox — it is still a container.
     cap_drop: [ALL]
     cap_add: [CHOWN, DAC_OVERRIDE, SETUID, SETGID]
