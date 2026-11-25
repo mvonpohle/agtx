@@ -9250,6 +9250,15 @@ impl App {
         self.state.stuck_task_notified.clear();
         self.state.stuck_task_idle_since.clear();
 
+        // The recorded orchestrator pane belongs to the project we're leaving;
+        // its notifications must not be delivered into it. Clearing here makes
+        // deliver_orchestrator_notifications bail (session is None) and lets
+        // pressing O re-attach via the existing cross-instance path.
+        self.state.orchestrator_session = None;
+        self.state
+            .orchestrator_ready
+            .store(false, Ordering::Release);
+
         // Reload config for the new project so per-phase agent overrides are respected
         let global_config = GlobalConfig::load().unwrap_or_default();
         let project_config = ProjectConfig::load(&project_path).unwrap_or_default();

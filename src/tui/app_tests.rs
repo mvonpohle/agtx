@@ -13237,6 +13237,63 @@ fn test_switch_to_project_reloads_config() {
     assert_eq!(app.state.config.agent_for_phase("review"), "codex");
 }
 
+/// Switching projects detaches the recorded orchestrator pane.
+/// Leaving it set would let the *new* project's notifications be typed into
+/// the *previous* project's orchestrator pane, which cannot see or act on them.
+#[test]
+#[cfg(feature = "test-mocks")]
+fn test_switch_to_project_clears_orchestrator() {
+    use std::fs;
+    use std::sync::atomic::Ordering;
+    use tempfile::TempDir;
+
+    let _data_dir = redirect_data_dir();
+
+    let project_dir = TempDir::new().unwrap();
+    fs::create_dir_all(project_dir.path().join(".agtx")).unwrap();
+
+    let mut mock_tmux = MockTmuxOperations::new();
+    mock_tmux.expect_window_exists().returning(|_| Ok(false));
+    mock_tmux.expect_has_session().returning(|_| false);
+    mock_tmux.expect_create_session().returning(|_, _| Ok(()));
+
+    let mut app = App::new_for_test(
+        Some(PathBuf::from("/tmp/test-project")),
+        Arc::new(mock_tmux),
+        Arc::new(MockGitOperations::new()),
+        Arc::new(MockGitProviderOperations::new()),
+        Arc::new(MockAgentRegistry::new()),
+    )
+    .unwrap();
+
+    // Simulate an orchestrator recorded for the project we're about to leave.
+    app.state.orchestrator_session = Some("projA:orchestrator".to_string());
+    app.state
+        .orchestrator_ready
+        .store(true, Ordering::Release);
+
+    let project_info = ProjectInfo {
+        name: project_dir
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string(),
+        path: project_dir.path().to_string_lossy().to_string(),
+    };
+    app.switch_to_project_keep_sidebar(&project_info).unwrap();
+
+    // The switch must detach the previous project's orchestrator.
+    assert!(
+        app.state.orchestrator_session.is_none(),
+        "switching projects must clear the recorded orchestrator pane"
+    );
+    assert!(
+        !app.state.orchestrator_ready.load(Ordering::Acquire),
+        "switching projects must drop orchestrator-ready"
+    );
+}
+
 // === Dependency-graph horizontal scroll clamp ===
 
 #[test]
